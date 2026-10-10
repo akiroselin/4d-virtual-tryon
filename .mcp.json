@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "fashion": {
+      "command": "python3",
+      "args": ["fashion_agent/mcp_server.py"]
+    }
+  }
+}

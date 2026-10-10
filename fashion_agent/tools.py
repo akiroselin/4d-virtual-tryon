@@ -1,0 +1,408 @@
+"""Design tools exposed to the fashion-design agent.
+
+Each tool is a plain function that takes JSON-compatible arguments and returns
+a JSON-compatible dict, so it can be unit-tested directly and served over MCP
+by ``fashion_agent.mcp_server``. The tools wrap the existing ``aigc_fashion``
+pipeline; they never claim a learned model ran when it did not.
+"""
+
+from __future__ import annotations
+
+from dataclasses import asdict, fields
+import json
+from pathlib import Path
+import re
+from typing import Any, Callable
+
+ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_SESSIONS_DIR = ROOT / "outputs" / "design_sessions"
+
+# Only this family has an end-to-end pattern -> drape -> fit-gate route in
+# ``aigc_fashion.pipeline.run_pipeline``; other families stop at hypotheses.
+SIMULATED_GARMENT_TYPES = ("t-shirt",)
+
+INTENT_FIELDS = ("garment_type", "silhouette", "sleeve", "neckline", "fabric", "style_refs", "body_fit")
+BODY_FIELDS = ("height_cm", "chest_cm", "waist_cm", "shoulder_cm")
+SIZE_FIELDS = (
+    "chest_circumference_cm",
+    "body_length_cm",
+    "shoulder_width_cm",
+    "sleeve_length_cm",
+    "sleeve_opening_cm",
+    "neck_width_cm",
+)
+
+
+class ToolError(ValueError):
+    """Raised for invalid tool input; reported to the agent as a tool error."""
+
+
+def _intent(brief: str | None, intent: dict[str, Any] | None):
+    from aigc_fashion.data import GarmentIntent
+    from aigc_fashion.semantics import parse_garment_intent
+
+    base = parse_garment_intent(prompt=brief) if brief else GarmentIntent(prompt="")
+    values = asdict(base)
+    for key, value in (intent or {}).items():
+        if key not in INTENT_FIELDS:
+            raise ToolError(f"unknown intent field {key!r}; allowed: {', '.join(INTENT_FIELDS)}")
+        values[key] = tuple(value) if key == "style_refs" else value
+    if not values["prompt"]:
+        values["prompt"] = " ".join(str(values[k]) for k in ("silhouette", "fabric", "garment_type"))
+    values["style_refs"] = tuple(values["style_refs"])
+    if "body_fit" not in (intent or {}):
+        values["body_fit"] = "close" if values["silhouette"] == "slim" else "loose"
+    return GarmentIntent(**values)
+
+
+def _avatar(body: dict[str, Any] | None):
+    from aigc_fashion.data import AvatarSpec
+
+    body = dict(body or {})
+    unknown = set(body) - set(BODY_FIELDS) - {"hip_cm", "upper_arm_cm"}
+    if unknown:
+        raise ToolError(f"unknown body field(s) {sorted(unknown)}; allowed: {BODY_FIELDS + ('hip_cm', 'upper_arm_cm')}")
+    return AvatarSpec(**{k: float(body[k]) for k in BODY_FIELDS if k in body})
+
+
+def _size(size_cm: dict[str, Any] | None):
+    if not size_cm:
+        return None
+    from aigc_fashion.data import TshirtSizeSpec
+
+    unknown = set(size_cm) - set(SIZE_FIELDS)
+    if unknown:
+        raise ToolError(f"unknown size field(s) {sorted(unknown)}; allowed: {SIZE_FIELDS}")
+    return TshirtSizeSpec(**{k: float(v) for k, v in size_cm.items()})
+
+
+def _design_dir(design_id: str, sessions_dir: Path) -> Path:
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}", design_id):
+        raise ToolError("design_id must be 1-64 characters of letters, digits, '-' or '_'")
+    return sessions_dir / design_id
+
+
+def list_garment_templates() -> dict[str, Any]:
+    """Pattern templates the router knows, and which ones the agent can simulate."""
+
+    from aigc_fashion.pattern_library import load_pattern_library
+
+    templates = []
+    for template in load_pattern_library():
+        templates.append(
+            {
+                "template_id": template.template_id,
+                "garment_type": template.garment_type,
+                "aliases": list(template.aliases),
+                "generator_status": template.status,
+                "panels": [panel.role for panel in template.panels],
+                "required_measurements": list(template.required_measurements),
+                "material_families": list(template.material_families),
+                "end_to_end_simulation": template.garment_type in SIMULATED_GARMENT_TYPES,
+            }
+        )
+    return {"templates": templates, "simulated_garment_types": list(SIMULATED_GARMENT_TYPES)}
+
+
+def list_materials() -> dict[str, Any]:
+    """Fabric keywords the solver maps to material cards, plus measured reference profiles."""
+
+    from aigc_fashion.data import GarmentIntent
+    from aigc_fashion.measured_materials import MATERIAL_PROFILES
+    from aigc_fashion.patterns import material_from_intent
+
+    cards = {}
+    for fabric in ("medium cotton jersey", "light silk", "heavy denim", "light linen", "soft wool knit", "medium nylon"):
+        cards[fabric] = asdict(material_from_intent(GarmentIntent(prompt=fabric, fabric=fabric)))
+    profiles = {
+        profile_id: {
+            "construction": profile.construction,
+            "composition": profile.composition,
+            "evidence_status": profile.evidence_status,
+            "areal_density": asdict(profile.areal_density),
+        }
+        for profile_id, profile in MATERIAL_PROFILES.items()
+    }
+    return {
+        "solver_material_cards": cards,
+        "measured_reference_profiles": profiles,
+        "note": "Fabric keywords (silk, denim, linen, wool, nylon; otherwise cotton jersey) select the card. "
+        "Cards are uncalibrated engineering priors, not swatch measurements.",
+    }
+
+
+def parse_design_brief(brief: str, intent: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Turn a brief into a structured garment intent and route it to a pattern template."""
+
+    from aigc_fashion.pattern_library import classify_garment_intent, get_pattern_template
+    from aigc_fashion.patterns import material_from_intent
+
+    garment_intent = _intent(brief, intent)
+    classification = classify_garment_intent(garment_intent.garment_type, prompt=garment_intent.prompt)
+    template = get_pattern_template(classification.template_id)
+    return {
+        "intent": asdict(garment_intent),
+        "classification": classification.to_dict(),
+        "template_status": template.status,
+        "material_card": asdict(material_from_intent(garment_intent)),
+        "end_to_end_simulation": garment_intent.garment_type in SIMULATED_GARMENT_TYPES,
+        "parser": "keyword heuristic; pass explicit `intent` fields to override anything it misread",
+    }
+
+
+def generate_construction_hypotheses(
+    intent: dict[str, Any],
+    body: dict[str, Any] | None = None,
+    top_k: int = 3,
+) -> dict[str, Any]:
+    """Body-graded Top-K construction/fit candidates for any template in the library."""
+
+    from aigc_fashion.construction_hypotheses import generate_physical_structure_hypotheses
+
+    garment_intent = _intent(None, intent)
+    body = dict(body or {})
+    overrides = {}
+    if "hip_cm" in body:
+        overrides["hip_circumference"] = float(body["hip_cm"])
+    if "upper_arm_cm" in body:
+        overrides["upper_arm_circumference"] = float(body["upper_arm_cm"])
+    hypotheses = generate_physical_structure_hypotheses(
+        garment_intent,
+        _avatar(body),
+        measurement_overrides_cm=overrides,
+        top_k=max(1, min(int(top_k), 5)),
+    )
+    return {"hypotheses": [item.to_dict() for item in hypotheses]}
+
+
+def run_tryon(
+    design_id: str,
+    intent: dict[str, Any],
+    body: dict[str, Any] | None = None,
+    size_cm: dict[str, Any] | None = None,
+    texture_image: str | None = None,
+    body_mesh: str | None = None,
+    steps: int = 32,
+    resolution: int = 19,
+    notes: str = "",
+    sessions_dir: Path = DEFAULT_SESSIONS_DIR,
+) -> dict[str, Any]:
+    """Build the pattern, dress the avatar, simulate, and run the fit gates for one design iteration."""
+
+    from aigc_fashion.pipeline import run_pipeline
+
+    garment_intent = _intent(None, intent)
+    if garment_intent.garment_type not in SIMULATED_GARMENT_TYPES:
+        raise ToolError(
+            f"run_tryon only simulates {SIMULATED_GARMENT_TYPES}; {garment_intent.garment_type!r} "
+            "stops at generate_construction_hypotheses in this build"
+        )
+    design_dir = _design_dir(design_id, sessions_dir)
+    iteration = len(_iteration_dirs(design_dir)) + 1
+    out_dir = design_dir / f"iter_{iteration:02d}"
+    intent_path = out_dir / "intent.json"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    intent_path.write_text(json.dumps(asdict(garment_intent), indent=2), encoding="utf-8")
+
+    summary = run_pipeline(
+        prompt=None,
+        intent_json=intent_path,
+        out_dir=out_dir,
+        avatar=_avatar(body),
+        tshirt_size=_size(size_cm),
+        texture_image=texture_image,
+        fit_from_image=texture_image is not None and size_cm is None,
+        body_mesh=body_mesh,
+        steps=max(4, min(int(steps), 128)),
+        resolution=max(11, min(int(resolution), 31)),
+    )
+    report = _iteration_report(iteration, summary, notes)
+    (out_dir / "agent_iteration.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
+    return report
+
+
+def _iteration_report(iteration: int, summary: dict[str, Any], notes: str) -> dict[str, Any]:
+    preflight = summary.get("vto_preflight") or {}
+    metrics = summary.get("metrics") or {}
+    key_metrics = (
+        "p95_edge_stretch",
+        "max_edge_stretch",
+        "surface_area_ratio",
+        "max_seam_gap_m",
+        "avatar_collision_max_penetration_last",
+    )
+    return {
+        "iteration": iteration,
+        "notes": notes,
+        "intent": summary.get("intent"),
+        "pattern_cm": {
+            key: round(100.0 * float(value), 1)
+            for key, value in (summary.get("pattern") or {}).items()
+            if key in ("body_width", "body_length", "shoulder_width", "sleeve_length", "sleeve_width", "neck_width")
+        },
+        "fit_validation": summary.get("fit_validation"),
+        "preflight": {
+            "status": preflight.get("status"),
+            "failed_checks": preflight.get("failed_checks", []),
+            "recommendations": preflight.get("recommendations", []),
+        },
+        "key_metrics": {key: metrics[key] for key in key_metrics if key in metrics},
+        "artifacts": {
+            key: value
+            for key, value in (summary.get("artifacts") or {}).items()
+            if key in ("obj", "final_png", "gif", "vto_preflight") and value
+        },
+        "limits": "Uncalibrated research solver; a pass means the design cleared this build's geometric gates, "
+        "not that it is production-validated.",
+    }
+
+
+def _iteration_dirs(design_dir: Path) -> list[Path]:
+    if not design_dir.exists():
+        return []
+    return sorted(path for path in design_dir.glob("iter_*") if path.is_dir())
+
+
+def compare_iterations(design_id: str, sessions_dir: Path = DEFAULT_SESSIONS_DIR) -> dict[str, Any]:
+    """Side-by-side gate status and metrics of every iteration recorded for a design."""
+
+    design_dir = _design_dir(design_id, sessions_dir)
+    rows = []
+    for path in _iteration_dirs(design_dir):
+        report_path = path / "agent_iteration.json"
+        if not report_path.exists():
+            rows.append({"iteration_dir": str(path), "status": "incomplete"})
+            continue
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+        rows.append(
+            {
+                "iteration": report["iteration"],
+                "notes": report.get("notes", ""),
+                "intent": {k: (report.get("intent") or {}).get(k) for k in ("silhouette", "fabric", "sleeve", "neckline")},
+                "pattern_cm": report.get("pattern_cm"),
+                "fit_status": (report.get("fit_validation") or {}).get("status"),
+                "fit_failed": (report.get("fit_validation") or {}).get("failed_checks", []),
+                "preflight_status": report["preflight"]["status"],
+                "preflight_failed": report["preflight"]["failed_checks"],
+                "key_metrics": report.get("key_metrics"),
+            }
+        )
+    if not rows:
+        raise ToolError(f"no iterations recorded for design {design_id!r}")
+    return {"design_id": design_id, "iterations": rows}
+
+
+_INTENT_SCHEMA = {
+    "type": "object",
+    "description": "Structured garment intent.",
+    "properties": {
+        "garment_type": {"type": "string", "description": "e.g. t-shirt, skirt, dress, hoodie (see list_garment_templates)"},
+        "silhouette": {"type": "string", "enum": ["slim", "relaxed", "oversized"]},
+        "sleeve": {"type": "string", "enum": ["sleeveless", "short", "long"]},
+        "neckline": {"type": "string", "enum": ["crew", "v-neck", "boat"]},
+        "fabric": {"type": "string", "description": "e.g. medium cotton jersey, light silk, heavy denim"},
+        "style_refs": {"type": "array", "items": {"type": "string"}},
+        "body_fit": {"type": "string", "enum": ["close", "loose"]},
+    },
+    "additionalProperties": False,
+}
+_BODY_SCHEMA = {
+    "type": "object",
+    "description": "Body measurements in cm; omitted values fall back to an adult default avatar.",
+    "properties": {name: {"type": "number"} for name in (*BODY_FIELDS, "hip_cm", "upper_arm_cm")},
+    "additionalProperties": False,
+}
+_SIZE_SCHEMA = {
+    "type": "object",
+    "description": "Finished T-shirt garment measurements in cm. Omit to let the body grade the size.",
+    "properties": {name: {"type": "number"} for name in SIZE_FIELDS},
+    "additionalProperties": False,
+}
+
+TOOLS: dict[str, tuple[Callable[..., dict[str, Any]], str, dict[str, Any]]] = {
+    "list_garment_templates": (
+        list_garment_templates,
+        "List garment pattern templates, their panels and required measurements, and which garment types "
+        "can be simulated end to end.",
+        {"type": "object", "properties": {}},
+    ),
+    "list_materials": (
+        list_materials,
+        "List fabric keywords the solver understands and the measured reference fabric profiles.",
+        {"type": "object", "properties": {}},
+    ),
+    "parse_design_brief": (
+        parse_design_brief,
+        "Convert a natural-language design brief into a structured garment intent, routed template and "
+        "material card. Pass `intent` fields to correct anything the keyword parser got wrong.",
+        {
+            "type": "object",
+            "properties": {"brief": {"type": "string"}, "intent": _INTENT_SCHEMA},
+            "required": ["brief"],
+        },
+    ),
+    "generate_construction_hypotheses": (
+        generate_construction_hypotheses,
+        "Grade the garment's construction template against body measurements into Top-K fit candidates "
+        "(panels, seams, openings, graded parameters, warnings). Works for every template.",
+        {
+            "type": "object",
+            "properties": {
+                "intent": _INTENT_SCHEMA,
+                "body": _BODY_SCHEMA,
+                "top_k": {"type": "integer", "minimum": 1, "maximum": 5, "default": 3},
+            },
+            "required": ["intent"],
+        },
+    ),
+    "run_tryon": (
+        run_tryon,
+        "Run one design iteration: build the pattern, dress the avatar, simulate the drape and run the "
+        "preflight and fit gates. Saves artifacts under outputs/design_sessions/<design_id>/iter_NN and "
+        "returns gate results, failed checks, recommendations and the preview image. T-shirts only. "
+        "Takes roughly 10-60 s on CPU.",
+        {
+            "type": "object",
+            "properties": {
+                "design_id": {"type": "string", "description": "Stable id for this design; iterations accumulate under it."},
+                "intent": _INTENT_SCHEMA,
+                "body": _BODY_SCHEMA,
+                "size_cm": _SIZE_SCHEMA,
+                "texture_image": {"type": "string", "description": "Optional path to a garment/print image."},
+                "body_mesh": {"type": "string", "description": "Optional path to an upright body OBJ."},
+                "steps": {"type": "integer", "minimum": 4, "maximum": 128, "default": 32},
+                "resolution": {"type": "integer", "minimum": 11, "maximum": 31, "default": 19},
+                "notes": {"type": "string", "description": "What changed in this iteration and why."},
+            },
+            "required": ["design_id", "intent"],
+        },
+    ),
+    "compare_iterations": (
+        compare_iterations,
+        "Compare gate status, pattern measurements and metrics across all iterations of a design.",
+        {
+            "type": "object",
+            "properties": {"design_id": {"type": "string"}},
+            "required": ["design_id"],
+        },
+    ),
+}
+
+
+def call_tool(name: str, arguments: dict[str, Any] | None) -> dict[str, Any]:
+    if name not in TOOLS:
+        raise ToolError(f"unknown tool {name!r}")
+    function = TOOLS[name][0]
+    return function(**(arguments or {}))
+
+
+def tool_field_names() -> dict[str, list[str]]:
+    """Field names of the pipeline dataclasses the schemas mirror (used by tests)."""
+
+    from aigc_fashion.data import AvatarSpec, GarmentIntent, TshirtSizeSpec
+
+    return {
+        "intent": [f.name for f in fields(GarmentIntent)],
+        "body": [f.name for f in fields(AvatarSpec)],
+        "size": [f.name for f in fields(TshirtSizeSpec)],
+    }

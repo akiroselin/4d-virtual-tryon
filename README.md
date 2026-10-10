@@ -28,16 +28,53 @@ solver. Its default Anny path now preserves an immutable 3D shell rest metric,
 uses pure body-SDF contact, and has no runtime seam springs. Genesis FEM plus IPC
 remains the target high-fidelity validator on a supported Linux/`pyuipc` host.
 
-## Run
+## Agentic fashion design (Easy Agent)
+
+The pipeline is also exposed as an agent toolchain for
+[Easy Agent](https://github.com/ConardLi/easy-agent) (`eagent`), or any other
+MCP client:
+
+| Piece | Path | Role |
+|---|---|---|
+| MCP server `fashion` | `fashion_agent/mcp_server.py`, `.mcp.json` | Tools: `list_garment_templates`, `list_materials`, `parse_design_brief`, `generate_construction_hypotheses`, `run_tryon`, `compare_iterations` |
+| Skill `/design-garment` | `.easy-agent/skills/design-garment/SKILL.md` | Brief -> construction hypotheses -> try-on -> critique -> revise loop, ending in `DESIGN_REPORT.md` |
+| Agent `fashion-designer` | `.easy-agent/agents/fashion-designer.md` | Runs the same loop autonomously as a sub-agent |
+| Agent `fit-critic` | `.easy-agent/agents/fit-critic.md` | Read-only reviewer that judges each iteration and proposes the next change |
+| Project memory | `AGENTS.md` | Layout, commands and rules loaded into every session |
 
 ```bash
-cd /Users/muwusah/Documents/Codex/2026-07-06/5
-/opt/homebrew/anaconda3/bin/python3 -m pip install -r outputs/aigc_fashion_prototype/requirements.txt
-/opt/homebrew/anaconda3/bin/python3 outputs/aigc_fashion_prototype/examples/run_mvp.py \
+python3 -m pip install -r requirements.txt
+npm install -g --ignore-scripts eagent
+export ANTHROPIC_AUTH_TOKEN=...      # or configure another provider profile
+eagent                               # trust the folder and approve the `fashion` MCP server
+> /design-garment relaxed white cotton tee for a 170 cm person, chest 90, waist 74, shoulder 42
+```
+
+Each `run_tryon` call writes `outputs/design_sessions/<design_id>/iter_NN/`
+(OBJ, preview PNG, rollout GIF, preflight JSON, `agent_iteration.json`) and
+returns the gate results plus the preview image, so the model can look at the
+drape. Only T-shirts are simulated end to end; other garment types get
+body-graded construction hypotheses. If `python3` on `PATH` lacks the
+requirements, point `command` in `.mcp.json` at the right interpreter.
+
+## Run
+
+All commands run from the repository root. Paths under `assets/body_meshes/`,
+`assets/mocap/`, `outputs/` and `work/` are local-only (gitignored) and must be
+created or downloaded first; the image-driven examples now take
+`--texture-image` / `--shirt-texture` / `--skirt-image` as required arguments.
+
+```bash
+python3 -m pip install -r requirements.txt
+python3 examples/run_mvp.py \
   --prompt "oversized minimal streetwear short sleeve cotton t-shirt" \
   --steps 64 \
   --resolution 23
 ```
+
+The original build machine's absolute paths still appear in some commands
+below; read `/opt/homebrew/anaconda3/bin/python3` as `python3` and
+`outputs/aigc_fashion_prototype/` as the repository root.
 
 Commercial-safe Anny body mesh path:
 
@@ -462,12 +499,12 @@ solver, not looser material gates.
 ## Test
 
 ```bash
-cd /Users/muwusah/Documents/Codex/2026-07-06/5/outputs/aigc_fashion_prototype
-/opt/homebrew/anaconda3/bin/python3 -m pytest -q
+python3 -m pip install -r requirements.txt
+python3 -m pytest -q
 ```
 
-The default macOS `/usr/bin/python3` is not sufficient unless the dependencies
-above have been installed into it.
+Tests that read local-only assets (body meshes, mocap, prior outputs, the
+CortexODE checkout) are reported as skipped on a clean clone.
 
 ## License Boundary
 
