@@ -119,3 +119,12 @@ def test_outfit_tools_validate_inputs_and_list_committed_scenes():
         call_tool("simulate_outfit", {"outfit_id": "bad id!", "shirt_image": "a.png", "skirt_image": "b.png"})
     with pytest.raises(ToolError):
         call_tool("simulate_outfit", {"outfit_id": "ok", "shirt_image": "missing.png", "skirt_image": "missing.png"})
+
+
+def test_reconstruct_body_tool_validates_inputs():
+    with pytest.raises(ToolError):
+        call_tool("reconstruct_body", {"body_id": "bad id!", "prediction_json": "x.json"})
+    with pytest.raises(ToolError):
+        call_tool("reconstruct_body", {"body_id": "b1"})
+    with pytest.raises(ToolError):
+        call_tool("reconstruct_body", {"body_id": "b1", "prediction_json": "missing.json"})

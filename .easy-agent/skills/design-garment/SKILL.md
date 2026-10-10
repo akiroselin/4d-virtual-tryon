@@ -22,8 +22,13 @@ every decision traceable to a tool result.
 2. If the brief names a fabric the solver does not know, call
    `mcp__fashion__list_materials` and pick the closest card; say which.
 3. Collect body measurements from the brief (height, chest, waist, shoulder,
-   hip, upper arm, in cm). If none are given, say you are using the default
-   adult avatar. Do not invent measurements and present them as the user's.
+   hip, upper arm, in cm). If the user gives a photo of the wearer, call
+   `mcp__fashion__reconstruct_body` (SAM 3D Body + MHR): it returns estimated
+   measurements, an A-pose body mesh and ready-to-use `run_tryon` arguments
+   (`body`, `body_mesh`, `body_mesh_axes`). Look at its preview image, present
+   the numbers as single-image estimates and let the user correct them. If
+   neither is given, say you are using the default adult avatar. Do not invent
+   measurements and present them as the user's.
 4. Choose a short `design_id` (letters, digits, `-`, `_`).
 
 ## 2. Explore construction options

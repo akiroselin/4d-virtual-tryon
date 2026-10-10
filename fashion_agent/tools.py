@@ -191,6 +191,7 @@ def run_tryon(
     size_cm: dict[str, Any] | None = None,
     texture_image: str | None = None,
     body_mesh: str | None = None,
+    body_mesh_axes: dict[str, str] | None = None,
     steps: int = 32,
     resolution: int = 19,
     notes: str = "",
@@ -222,6 +223,8 @@ def run_tryon(
         texture_image=texture_image,
         fit_from_image=texture_image is not None and size_cm is None,
         body_mesh=body_mesh,
+        body_mesh_source_up_axis=(body_mesh_axes or {}).get("source_up_axis", "auto"),
+        body_mesh_source_front_axis=(body_mesh_axes or {}).get("source_front_axis", "auto"),
         steps=max(4, min(int(steps), 128)),
         resolution=max(11, min(int(resolution), 31)),
     )
@@ -360,7 +363,9 @@ def simulate_outfit(
     logs = out / "logs"
     preview = quality == "preview"
     shirt_steps = ["--training-steps", "60", "--minimum-training-steps", "30"] if preview else []
-    skirt_steps = ["--training-steps", "40", "--minimum-training-steps", "20"] if preview else []
+    skirt_steps = (
+        ["--teacher-steps", "8", "--training-steps", "40", "--minimum-training-steps", "20"] if preview else []
+    )
     body = ["--body-mesh", str(BODY_MESH)]
     stages: list[tuple[str, list[str]]] = []
     if not BODY_MESH.is_file():
@@ -450,6 +455,46 @@ def render_outfit(
     return result
 
 
+def reconstruct_body(
+    body_id: str,
+    image: str | None = None,
+    prediction_json: str | None = None,
+    person_index: int | None = None,
+) -> dict[str, Any]:
+    """Photo -> SAM 3D Body -> MHR A-pose body mesh + measurements for try-on."""
+
+    from aigc_fashion.body_reconstruction import reconstruct_body as _reconstruct
+
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}", body_id):
+        raise ToolError("body_id must be 1-64 characters of letters, digits, '-' or '_'")
+    if (image is None) == (prediction_json is None):
+        raise ToolError("pass exactly one of image or prediction_json")
+    for value in (image, prediction_json):
+        if value is not None and not (Path(value) if Path(value).is_absolute() else ROOT / value).is_file():
+            raise ToolError(f"file not found: {value}")
+    try:
+        result = _reconstruct(
+            ROOT / "outputs" / "bodies" / body_id,
+            image=Path(image) if image else None,
+            prediction_json=Path(prediction_json) if prediction_json else None,
+            person_index=person_index,
+        )
+    except RuntimeError as error:
+        raise ToolError(str(error)) from error
+    report = result.to_dict()
+    report["artifacts"] = {"final_png": result.preview_png}
+    report["use_in_run_tryon"] = {
+        "body": report["avatar"],
+        "body_mesh": result.body_mesh,
+        "body_mesh_axes": report["body_mesh_axes"],
+    }
+    report["limits"] = (
+        "Single-view estimate: metric scale comes from SAM 3D Body's priors, clothing hides the true surface, "
+        "and girths are measured on the parametric MHR surface. Confirm key measurements with the user."
+    )
+    return report
+
+
 _INTENT_SCHEMA = {
     "type": "object",
     "description": "Structured garment intent.",
@@ -527,7 +572,12 @@ TOOLS: dict[str, tuple[Callable[..., dict[str, Any]], str, dict[str, Any]]] = {
                 "body": _BODY_SCHEMA,
                 "size_cm": _SIZE_SCHEMA,
                 "texture_image": {"type": "string", "description": "Optional path to a garment/print image."},
-                "body_mesh": {"type": "string", "description": "Optional path to an upright body OBJ."},
+                "body_mesh": {"type": "string", "description": "Optional path to an upright body OBJ (e.g. from reconstruct_body)."},
+                "body_mesh_axes": {
+                    "type": "object",
+                    "description": "Axes of body_mesh, e.g. reconstruct_body's {source_up_axis: y, source_front_axis: z}.",
+                    "properties": {"source_up_axis": {"type": "string"}, "source_front_axis": {"type": "string"}},
+                },
                 "steps": {"type": "integer", "minimum": 4, "maximum": 128, "default": 32},
                 "resolution": {"type": "integer", "minimum": 11, "maximum": 31, "default": 19},
                 "notes": {"type": "string", "description": "What changed in this iteration and why."},
@@ -558,8 +608,8 @@ TOOLS.update(
             simulate_outfit,
             "Simulate a T-shirt + pleated-skirt outfit on the Anny child body from two product images and export "
             "a Three.js WebGPU scene named after outfit_id. Runs the full physics chain (pattern fit, implicit-shell "
-            "T-shirt, pleated skirt, unified layered 4D scene). Slow: about 15-30 min on CPU for 'preview', longer "
-            "for 'full'. Reports progress per stage.",
+            "T-shirt, pleated skirt, unified layered 4D scene). Slow on CPU: hours on a 4-core machine even for "
+            "'preview' (shorter physics teacher and fits); 'full' uses the runners' defaults. Reports progress per stage.",
             {
                 "type": "object",
                 "properties": {
@@ -569,6 +619,24 @@ TOOLS.update(
                     "quality": {"type": "string", "enum": ["preview", "full"], "default": "preview"},
                 },
                 "required": ["outfit_id", "shirt_image", "skirt_image"],
+            },
+        ),
+        "reconstruct_body": (
+            reconstruct_body,
+            "Reconstruct a person's body from one photo with Meta SAM 3D Body + the MHR parametric body model: "
+            "returns an A-pose body mesh (OBJ, metres, +Y up, +Z front), estimated height/chest/waist/hip/"
+            "shoulder in cm, a preview image, and ready-to-use run_tryon arguments. Pass `image` (needs the "
+            "SAM 3D Body environment: SAM3D_PYTHON, SAM3D_REPO, SAM3D_CHECKPOINT) or `prediction_json` "
+            "(a saved SAM 3D Body output).",
+            {
+                "type": "object",
+                "properties": {
+                    "body_id": {"type": "string"},
+                    "image": {"type": "string", "description": "Photo of the person (full body works best)."},
+                    "prediction_json": {"type": "string", "description": "Saved output of scripts/sam3d_body_infer.py."},
+                    "person_index": {"type": "integer", "description": "Which detected person; default the largest."},
+                },
+                "required": ["body_id"],
             },
         ),
         "render_outfit": (

@@ -21,6 +21,7 @@ const FASHION_TOOLS = [
   "mcp__fashion__run_tryon",
   "mcp__fashion__compare_iterations",
   "mcp__fashion__render_outfit",
+  "mcp__fashion__reconstruct_body",
 ];
 
 const DESIGNER_PROMPT = `You are the Fashion Design Agent's autonomous designer sub-agent.
@@ -31,7 +32,9 @@ backend can and cannot verify.
 Workflow (the full version is in .easy-agent/skills/design-garment/SKILL.md;
 read it first when it exists):
 1. mcp__fashion__parse_design_brief — correct the keyword parser with an
-   explicit intent where it misread the brief.
+   explicit intent where it misread the brief. When the user supplies a photo
+   of the wearer, call mcp__fashion__reconstruct_body first (SAM 3D Body + MHR)
+   and use its measurements and body mesh; say they are single-image estimates.
 2. mcp__fashion__generate_construction_hypotheses — pick a Top-K candidate and
    say why.
 3. Iterate with mcp__fashion__run_tryon (T-shirts only; at most 4 calls).

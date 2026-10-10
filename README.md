@@ -42,6 +42,7 @@ through the `fashion` MCP server.
 | Skill `/design-garment` | `.easy-agent/skills/design-garment/SKILL.md` | Brief → hypotheses → try-on → critique → revise → render → `DESIGN_REPORT.md` |
 | WebGPU viewer | `anny-cloth-webgpu.html`, `web/` | Three.js `WebGPURenderer` playback of simulated outfits |
 | Headless capture | `scripts/capture_webgpu.mjs` | Renders frames in Chromium and fails unless the backend is WebGPU (hardware GPU, else SwiftShader) |
+| Body from a photo | `aigc_fashion/body_reconstruction.py`, `scripts/sam3d_body_infer.py` | SAM 3D Body → MHR identity + bone scales → A-pose body mesh and measurements (`reconstruct_body` tool) |
 | Physics notes | `docs/PHYSICS_PRINCIPLES_zh.md` | How the cloth simulation works (Chinese) |
 
 ```bash
@@ -54,6 +55,26 @@ bin/fashion-agent                            # builds agent/ on first run; trust
 
 `.mcp.json` starts the server with `python3`; point `command` at the
 interpreter that has the requirements if `python3` on `PATH` does not.
+
+### Body reconstruction from one image (SAM 3D Body + MHR)
+
+[SAM 3D Body](https://github.com/facebookresearch/sam-3d-body) predicts the
+[Momentum Human Rig](https://github.com/facebookresearch/MHR) parameters of each
+person in a photo. `reconstruct_body` keeps the person's 45 identity
+coefficients and 68 bone scales, drops the photographed pose, evaluates MHR in
+its rest pose (already an A-pose, arms about 48° down) and returns an OBJ in
+metres (+Y up, +Z front), height / chest / waist / hip / shoulder estimates from
+mesh cross-sections, and a preview image. `run_tryon` accepts the mesh directly.
+
+- MHR (code and model assets): Apache-2.0. `ensure_mhr_model()` downloads the
+  release assets into `work/mhr/` (or set `MHR_MODEL_PATH`).
+- SAM 3D Body (code and weights): SAM License; the checkpoints are gated on
+  Hugging Face (request access to `facebook/sam-3d-body-dinov3`). Install it in
+  its own environment per its INSTALL.md, then set `SAM3D_PYTHON`, `SAM3D_REPO`
+  and `SAM3D_CHECKPOINT`. Without it, the tool also accepts a saved prediction
+  JSON written by `scripts/sam3d_body_infer.py`.
+- Single-view estimates: metric scale comes from the model's priors and clothes
+  hide the body, so confirm key measurements with the wearer.
 
 Headless WebGPU capture of any scene:
 

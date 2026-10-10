@@ -19,6 +19,8 @@ is loaded automatically by Easy Agent (and other tools that read `AGENTS.md`).
   `/design-garment` skill, and the tool allow rule.
 - `web/`, `anny-cloth-webgpu.html` — Three.js WebGPU outfit viewer;
   `scripts/capture_webgpu.mjs` renders verified WebGPU frames headlessly.
+- `aigc_fashion/body_reconstruction.py` — photo → SAM 3D Body → MHR A-pose body
+  and measurements; `scripts/sam3d_body_infer.py` runs in the SAM 3D Body env.
 - `assets/pattern_templates/pattern_library.json` — garment template ontology.
 - `examples/`, `scripts/` — CLI runners; `docs/` — design notes; `web/` — WebGPU viewer.
 - `tests/` — pytest suite.
@@ -39,7 +41,7 @@ bin/fashion-agent                          # the agent (builds agent/ on first r
 ## Local-only inputs (gitignored)
 
 `assets/body_meshes/`, `assets/mocap/`, `outputs/`, `work/` (SewFormer,
-CortexODE, Genesis checkouts) are not in the repository. Code that needs them
+CortexODE, Genesis checkouts, MHR assets in `work/mhr/`) are not in the repository. Code that needs them
 must take the path as an argument; never hard-code a personal absolute path.
 The optional `genesis_geometric` package is preferred when importable;
 otherwise `aigc_fashion/mesh_operators.py` provides the same operators.
