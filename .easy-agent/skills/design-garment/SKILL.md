@@ -62,7 +62,18 @@ For each iteration:
 5. Stop when the gates pass, when two consecutive iterations stop improving
    the design-fixable metrics, or when the budget is spent.
 
-## 4. Deliver
+## 4. Outfit render (when the user wants to see the outfit)
+
+- `mcp__fashion__list_outfit_scenes` shows the scenes the WebGPU viewer can play.
+- To make a new outfit from a T-shirt image and a pleated-skirt image, call
+  `mcp__fashion__simulate_outfit` with an `outfit_id`. It runs the full physics
+  chain on the Anny body and takes tens of minutes to hours on CPU; tell the
+  user before starting it.
+- `mcp__fashion__render_outfit` renders a scene with Three.js on the WebGPU
+  backend and returns the frames. Look at them before describing the result,
+  and quote `physics_audit` (body gap, display layer guard) as reported.
+
+## 5. Deliver
 
 Call `mcp__fashion__compare_iterations` and write
 `outputs/design_sessions/<design_id>/DESIGN_REPORT.md` containing:

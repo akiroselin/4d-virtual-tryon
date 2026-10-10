@@ -35,24 +35,47 @@ def _tool_list() -> list[dict[str, Any]]:
     ]
 
 
-def _tool_result(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+def _send(message: dict[str, Any]) -> None:
+    sys.stdout.write(json.dumps(message) + "\n")
+    sys.stdout.flush()
+
+
+def _progress_emitter(token: Any):
+    if token is None:
+        return None
+
+    def emit(done: int, total: int, message: str) -> None:
+        _send(
+            {
+                "jsonrpc": "2.0",
+                "method": "notifications/progress",
+                "params": {"progressToken": token, "progress": done, "total": total, "message": message},
+            }
+        )
+
+    return emit
+
+
+def _tool_result(name: str, arguments: dict[str, Any], progress_token: Any = None) -> dict[str, Any]:
     try:
-        result = call_tool(name, arguments)
+        result = call_tool(name, arguments, progress=_progress_emitter(progress_token))
     except (ToolError, TypeError, KeyError, FileNotFoundError) as error:
         return {"content": [{"type": "text", "text": f"{type(error).__name__}: {error}"}], "isError": True}
     except Exception as error:  # surface solver failures to the agent instead of killing the server
         traceback.print_exc(file=sys.stderr)
         return {"content": [{"type": "text", "text": f"{type(error).__name__}: {error}"}], "isError": True}
     content: list[dict[str, Any]] = [{"type": "text", "text": json.dumps(result, indent=2, default=str)}]
-    preview = (result.get("artifacts") or {}).get("final_png") if isinstance(result, dict) else None
-    if preview and Path(preview).is_file():
-        content.append(
-            {
-                "type": "image",
-                "data": base64.b64encode(Path(preview).read_bytes()).decode("ascii"),
-                "mimeType": "image/png",
-            }
-        )
+    artifacts = (result.get("artifacts") or {}) if isinstance(result, dict) else {}
+    images = [artifacts["final_png"]] if artifacts.get("final_png") else list(artifacts.get("frames") or [])
+    for image in images:
+        if Path(image).is_file():
+            content.append(
+                {
+                    "type": "image",
+                    "data": base64.b64encode(Path(image).read_bytes()).decode("ascii"),
+                    "mimeType": "image/png",
+                }
+            )
     return {"content": content, "isError": False}
 
 
@@ -75,7 +98,11 @@ def handle(message: dict[str, Any]) -> dict[str, Any] | None:
     elif method == "tools/list":
         result = {"tools": _tool_list()}
     elif method == "tools/call":
-        result = _tool_result(params.get("name", ""), params.get("arguments") or {})
+        result = _tool_result(
+            params.get("name", ""),
+            params.get("arguments") or {},
+            (params.get("_meta") or {}).get("progressToken"),
+        )
     else:
         return {"jsonrpc": "2.0", "id": request_id, "error": {"code": -32601, "message": f"Method not found: {method}"}}
     return {"jsonrpc": "2.0", "id": request_id, "result": result}
@@ -97,8 +124,7 @@ def main() -> None:
         else:
             response = handle(message)
         if response is not None:
-            sys.stdout.write(json.dumps(response) + "\n")
-            sys.stdout.flush()
+            _send(response)
 
 
 if __name__ == "__main__":

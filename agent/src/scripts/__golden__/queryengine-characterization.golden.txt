@@ -1,0 +1,468 @@
+### help
+>>> /help
+command[info]:
+  | Commands: /help /clear /config [list|get|set] /cost /model [name|list|default] /mode [default|plan|auto] /think [on|off|<budget>] /effort [low|medium|high|max] /tasks [task|todo|reset] /mcp [tools <name>|reconnect <name>] /plugin [install|enable|disable|marketplace|reload ...] /reload-plugins /skills [reload] /agents /hooks /output-style [name] /history /compact /rewind [n] /status /context /doctor /copy [n] /export [file] /resume [n|id] /diff [n] /init /permissions [allow|deny|remove <rule>] /memory [edit <n>] /<skill-or-command> [args] /exit /quit /bye
+<<< handled=true
+
+### cost
+>>> /cost
+command[info]:
+  | Session usage
+  | - Input tokens: 100
+  | - Output tokens: 50
+  | - Total tokens: 150
+<<< handled=true
+
+### clear
+>>> /clear
+session_cleared
+messages_updated (count=0)
+command[info]:
+  | Conversation cleared.
+<<< handled=true
+
+### mode
+>>> /mode
+command[info]:
+  | Current mode: default
+<<< handled=true
+
+>>> /mode plan
+mode_changed default -> plan
+command[info]:
+  | Mode changed: default → plan
+<<< handled=true
+
+>>> /mode
+command[info]:
+  | Current mode: plan (will restore to default on plan exit)
+<<< handled=true
+
+>>> /mode default
+mode_changed plan -> default
+command[info]:
+  | Mode changed: plan → default
+<<< handled=true
+
+>>> /mode auto
+mode_changed default -> auto
+command[info]:
+  | Mode changed: default → auto
+<<< handled=true
+
+>>> /mode bogus
+command[error]:
+  | Invalid mode: bogus. Must be default, plan, or auto.
+<<< handled=true
+
+### tasks
+>>> /tasks
+command[info]:
+  | Task system status
+  | - Active: task (persistent task list)
+  | - Usage: /tasks task      Use the persistent task list (default)
+  | - Usage: /tasks todo      Use a session-only todo list
+  | - Usage: /tasks reset     Delete every task in the current task list
+<<< handled=true
+
+>>> /tasks task
+command[info]:
+  | Task system is already 'task'.
+<<< handled=true
+
+>>> /tasks bogus
+command[error]:
+  | Invalid task mode: bogus. Must be task, todo, or reset.
+<<< handled=true
+
+### model
+>>> /model
+command[info]:
+  | Model status
+  | - Active model: claude-sonnet-4-20250514
+  | - Source: default
+  | - Default model: claude-sonnet-4-20250514
+  | - Session override: none
+  | - Declared profiles: none (set them in settings.json `models`)
+  | - Usage: /model <name|profile> to override for this session
+  | - Usage: /model list to see profiles, /model default to clear the override
+<<< handled=true
+
+>>> /model list
+command[info]:
+  | Model profiles
+  |   (none declared — add a `models` block to settings.json)
+  |
+  | Switch with /model <id>; clear with /model default.
+<<< handled=true
+
+>>> /model my-custom-model
+model_changed model=my-custom-model source=session
+command[info]:
+  | Model updated
+  | - Active model: my-custom-model
+  | - Protocol: anthropic (raw model name)
+  | - Source: session
+  | - Default model remains: claude-sonnet-4-20250514
+<<< handled=true
+
+>>> /model
+command[info]:
+  | Model status
+  | - Active model: my-custom-model
+  | - Source: session
+  | - Default model: claude-sonnet-4-20250514
+  | - Session override: my-custom-model
+  | - Declared profiles: none (set them in settings.json `models`)
+  | - Usage: /model <name|profile> to override for this session
+  | - Usage: /model list to see profiles, /model default to clear the override
+<<< handled=true
+
+>>> /model default
+model_changed model=claude-sonnet-4-20250514 source=default
+command[info]:
+  | Model updated
+  | - Active model: claude-sonnet-4-20250514
+  | - Source: default
+  | - Session override cleared
+<<< handled=true
+
+### history
+>>> /history
+command[info]:
+  | No saved sessions found for this project.
+<<< handled=true
+
+### status
+>>> /status
+command[info]:
+  | Status
+  |
+  | - cwd: <CWD>
+  | - Session id: char-session
+  | - Model: claude-sonnet-4-20250514 (source: default; default: claude-sonnet-4-20250514)
+  | - Permission mode: default
+  | - Task system: persistent task list (task)
+  | - Output style: default
+  | - Messages in context: 2
+  | - Session tokens: in 100 / out 50
+  | - Tools enabled (22): Read, Write, Edit, MultiEdit, Glob, Grep, Bash, WebFetch, WebSearch, ListMcpResources, ReadMcpResource, MemoryWrite, TaskCreate, TaskUpdate, TaskGet, TaskList, EnterPlanMode, ExitPlanMode, Skill, AskUserQuestion, Agent, ToolSearch
+  | - MCP servers: none configured
+<<< handled=true
+
+### context
+>>> /context
+command[info]:
+  | Context usage (claude-sonnet-4-20250514)
+  |
+  | Context window: 200,000 tokens
+  |
+  |   System prompt          <SYSTEM_PROMPT_USAGE>
+  |   AGENT.md + memory      ░░░░░░░░░░░░░░░░░░░░   0.0%  4 tok
+  |   Tool definitions       <TOOL_DEFINITION_USAGE>
+  |   Conversation history   ░░░░░░░░░░░░░░░░░░░░   0.0%  42 tok
+  |   Free space             <FREE_SPACE>
+  |
+  | Estimated used: <ESTIMATED_USAGE>
+  |
+  | Tool search: on — 10 deferred tool(s), 0 loaded via ToolSearch
+  |   Always loaded: <ALWAYS_LOADED_USAGE>
+  |   Deferred loaded: 0 tool(s), ~0 tok
+  |   Deferred not loaded: 10 tool(s), 0 schema tok
+<<< handled=true
+
+### doctor
+>>> /doctor
+command[info]:
+  | Doctor — environment check
+  |
+  | ✓ Node.js <NODE> (requires 22+)
+  | ✓ Active model: claude-sonnet-4-20250514
+  |   Provider: anthropic
+  |   Profile: raw model name (source: default)
+  | ✗ No API auth configured for the active anthropic provider — set ANTHROPIC_AUTH_TOKEN or configure apiKey on the active profile.
+  |   Credential presence only; authentication has not been verified.
+  |   Endpoint: https://api.anthropic.com (source: provider default)
+  | <ENDPOINT_PROBE>
+  | ✓ MCP: none configured
+  | <SANDBOX_STATUS>
+  | ✓ Settings files valid
+  | ✓ Runtime state valid
+  | <LOCAL_DATA_PERMISSIONS>
+  | ✓ Project configuration: trusted
+  | ✓ Plugins: 0 active, no load errors
+  |
+  | Configuration (effective values + source; reload policy)
+  |   models = {} [{}; next request]
+  |   mode = "default" [default; config command]
+  |   autoMode = false [default; config command]
+  |   allow = [] [default; config command]
+  |   deny = [] [default; config command]
+  |   ask = [] [default; config command]
+  |   additionalDirectories = [] [default; restart]
+  |   disableAllHooks = false [default; next event]
+  |   checkpointingEnabled = true [default; next checkpoint]
+  |   respectGitignore = true [default; next search]
+  |   syntaxHighlightingDisabled = false [default; restart]
+  |   prefersReducedMotion = false [default; restart]
+  |   enableAllProjectMcpServers = false [default; restart]
+  |   enabledPlugins = {} [default; plugin reload]
+  |   toolSearch = on [default; next request]
+  |   toolSearchAutoThreshold = 10 [default; next request]
+<<< handled=true
+
+### copy
+>>> /copy
+command[info]:
+  | Nothing to copy yet — no assistant reply in this conversation.
+<<< handled=true
+
+>>> /copy
+command[error]:
+  | <CLIPBOARD_RESULT>
+<<< handled=true
+
+>>> /copy 99
+command[error]:
+  | Cannot copy reply #99: only 1 assistant reply so far.
+<<< handled=true
+
+>>> /copy abc
+command[error]:
+  | Invalid index: abc. Usage: /copy [n] where n ≥ 1 (1 = most recent reply).
+<<< handled=true
+
+### export
+>>> /export <TMP>/export.md
+command[info]:
+  | Exported 2 message(s) to:
+  |   <TMP>/export.md
+<<< handled=true
+
+### resume
+>>> /resume
+resume_picker (1):
+  1. "Hello from the OLD session." · 2 msg · claude-sonnet-4-20250514
+<<< handled=true
+
+>>> /resume char-resume-target
+session_switched msgs=2 snapshots=0
+notice[info] Switched to session char-res: 2 message(s) restored
+Model: claude-sonnet-4-20250514
+<<< handled=true
+
+### diff
+>>> /diff
+diff_view isRepo=false files=0 truncated=false fileHistory=empty
+<<< handled=true
+
+>>> /diff 2
+diff_view isRepo=false files=0 truncated=false fileHistory=empty
+<<< handled=true
+
+>>> /diff xyz
+command[error]:
+  | Invalid turn count: xyz. Usage: /diff [n] where n ≥ 1.
+<<< handled=true
+
+### permissions
+>>> /permissions
+permissions_view mode=default allow=0 deny=0
+<<< handled=true
+
+>>> /permissions allow Read --local
+command[info]:
+  | Allowed rule
+  | - Rule: Read
+  | - Scope: local
+  | - Applied to this session; takes effect on the next tool call.
+<<< handled=true
+
+>>> /permissions deny Bash(rm:*) --project
+command[info]:
+  | Denied rule
+  | - Rule: Bash(rm:*)
+  | - Scope: project
+  | - Applied to this session; takes effect on the next tool call.
+<<< handled=true
+
+>>> /permissions list
+command[info]:
+  | Permission rules
+  | - Mode: default
+  |
+  | [user (~/.easy-agent/settings.json)]
+  |   (none)
+  | [project (.easy-agent/settings.json)]
+  |   deny   Bash(rm:*)
+  | [local (.easy-agent/settings.local.json)]
+  |   allow  Read
+  | [session (this run only, not persisted)]
+  |   (none)
+  |
+  | Usage: /permissions allow <rule>  [--user|--project|--local]
+  | Usage: /permissions deny <rule>   [--user|--project|--local]
+  | Usage: /permissions remove <rule> [--user|--project|--local]
+  | Default scope is --local (this project, gitignored).
+  | Rule examples: Read · Bash(git status:*) · WebFetch(domain:example.com)
+<<< handled=true
+
+>>> /permissions remove Read --local
+command[info]:
+  | Removed rule
+  | - Rule: Read
+  | - Scope: local
+  | - Applied to this session; takes effect on the next tool call.
+<<< handled=true
+
+>>> engine.mutatePermissionRule('allow','Glob','project')
+permissions_view mode=default allow=1 deny=1
+
+### memory
+>>> /memory
+memory_picker (2):
+  1. global AGENT.md (new)
+  2. project AGENT.md (new)
+<<< handled=true
+
+>>> /memory list
+command[info]:
+  | Memory files
+  |
+  |   1. global AGENT.md
+  |      <TMP>/home/.easy-agent/AGENT.md  (missing)
+  |   2. project AGENT.md
+  |      AGENT.md  (missing)
+  |
+  | Usage: /memory edit <n>   open a file in $EDITOR (set $EDITOR or $VISUAL)
+<<< handled=true
+
+>>> /memory edit 2
+open_editor project AGENT.md: <MEMCWD>/AGENT.md
+<<< handled=true
+
+>>> /memory edit 99
+command[error]:
+  | Invalid selection: 99. Use /memory to list (1–2).
+<<< handled=true
+
+### config
+>>> /config list
+command[info]:
+  | Configuration (effective values + source)
+  |
+  | No settings configured. Use /config set <key> <value> to add one.
+  |
+  | Usage: /config get <key>
+  | Usage: /config set <key> <value> [--user|--project|--local]
+<<< handled=true
+
+>>> /config get model
+command[info]:
+  | model is not set.
+<<< handled=true
+
+>>> /config set cleanupPeriodDays 7 --local
+command[info]:
+  | Setting updated
+  | - cleanupPeriodDays = 7
+  | - Scope: local
+  | - Reload: restart required.
+<<< handled=true
+
+>>> /config get cleanupPeriodDays
+command[info]:
+  | cleanupPeriodDays = 7   [local]
+<<< handled=true
+
+### output-style
+>>> /output-style
+command[info]:
+  | Output style status
+  | - Active: default
+  |
+  | Available styles:
+  |   * default    Default — concise and professional [built-in]
+  |     Explanatory    Easy Agent explains its implementation choices and codebase patterns [built-in]
+  |     Learning    Easy Agent pauses and asks you to write small pieces of code for hands-on practice [built-in]
+  |
+  | Usage: /output-style <name> to switch (e.g. /output-style Explanatory)
+  | Usage: /output-style default to reset
+<<< handled=true
+
+### skills
+>>> /skills
+command[info]:
+  | Skills (0 loaded)
+  |
+  | No skills found. Add a directory containing SKILL.md to:
+  |   ~/.easy-agent/skills/<name>/SKILL.md   (user-wide)
+  |   .easy-agent/skills/<name>/SKILL.md     (project-only)
+<<< handled=true
+
+### agents
+>>> /agents
+command[info]:
+  | Agents (0 loaded)
+  |
+  | No agents registered. Built-ins should always be present — if you see
+  | this, the bootstrap may have failed; check the startup logs.
+  | Add custom agents under:
+  |   ~/.easy-agent/agents/<name>.md   (user-wide)
+  |   .easy-agent/agents/<name>.md     (project-only)
+<<< handled=true
+
+### hooks
+>>> /hooks
+command[info]:
+  | Hooks configuration
+  |
+  | User-scope file:    <TMP>/home/.easy-agent/settings.json
+  | Project-scope file: <CWD>/.easy-agent/settings.json
+  |
+  | No hooks configured. To add one, edit the user or project file above:
+  |
+  |   {
+  |     "hooks": {
+  |       "PreToolUse": [
+  |         { "matcher": "Bash", "hooks": [
+  |           { "type": "command", "command": "./safety-check.sh", "timeout": 10 }
+  |         ] }
+  |       ]
+  |     }
+  |   }
+  |
+  | Six events are supported: PreToolUse, PostToolUse, UserPromptSubmit, SessionStart, Stop, SubagentStop
+  |
+  | Hook contract:
+  |   - stdin = JSON event payload
+  |   - exit 0 + stdout text   → injected as additionalContext (for some events)
+  |   - exit 2 + stderr text   → block the action; stderr fed back to the model
+  |   - JSON stdout            → richer control (decision / permissionDecision / additionalContext)
+<<< handled=true
+
+### mcp
+>>> /mcp
+command[info]:
+  | MCP Servers (0 configured)
+  |
+  | No MCP servers configured. Add them under "mcpServers" in:
+  |   ~/.easy-agent/settings.json   (user-wide)
+  |   .easy-agent/settings.json      (project-only)
+<<< handled=true
+
+>>> /mcp tools
+command[error]:
+  | Usage: /mcp tools <serverName>
+<<< handled=true
+
+>>> /mcp reconnect nonexistent
+command[error]:
+  | MCP server 'nonexistent' is not configured.
+<<< handled=true
+
+### unknown
+>>> /bogus
+command[error]:
+  | Unknown command: /bogus. Try /help.
+<<< handled=true

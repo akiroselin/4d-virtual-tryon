@@ -28,34 +28,39 @@ solver. Its default Anny path now preserves an immutable 3D shell rest metric,
 uses pure body-SDF contact, and has no runtime seam springs. Genesis FEM plus IPC
 remains the target high-fidelity validator on a supported Linux/`pyuipc` host.
 
-## Agentic fashion design (Easy Agent)
+## Fashion Design Agent
 
-The pipeline is also exposed as an agent toolchain for
-[Easy Agent](https://github.com/ConardLi/easy-agent) (`eagent`), or any other
-MCP client:
+`agent/` is a fork of [Easy Agent](https://github.com/ConardLi/easy-agent)
+(MIT, copied from upstream commit `876c5ca`) turned into a garment-design
+agent. The Python code in this repository is its physics backend, reached
+through the `fashion` MCP server.
 
 | Piece | Path | Role |
 |---|---|---|
-| MCP server `fashion` | `fashion_agent/mcp_server.py`, `.mcp.json` | Tools: `list_garment_templates`, `list_materials`, `parse_design_brief`, `generate_construction_hypotheses`, `run_tryon`, `compare_iterations` |
-| Skill `/design-garment` | `.easy-agent/skills/design-garment/SKILL.md` | Brief -> construction hypotheses -> try-on -> critique -> revise loop, ending in `DESIGN_REPORT.md` |
-| Agent `fashion-designer` | `.easy-agent/agents/fashion-designer.md` | Runs the same loop autonomously as a sub-agent |
-| Agent `fit-critic` | `.easy-agent/agents/fit-critic.md` | Read-only reviewer that judges each iteration and proposes the next change |
-| Project memory | `AGENTS.md` | Layout, commands and rules loaded into every session |
+| Agent CLI | `agent/`, `bin/fashion-agent` | Fashion identity prompt, built-in `fashion-designer` and `fit-critic` agents, 30-minute MCP tool timeout (`EASY_AGENT_MCP_TOOL_TIMEOUT`) |
+| Physics MCP server `fashion` | `fashion_agent/`, `.mcp.json` | `parse_design_brief`, `generate_construction_hypotheses`, `run_tryon`, `compare_iterations`, `list_garment_templates`, `list_materials`, `list_outfit_scenes`, `simulate_outfit`, `render_outfit` |
+| Skill `/design-garment` | `.easy-agent/skills/design-garment/SKILL.md` | Brief → hypotheses → try-on → critique → revise → render → `DESIGN_REPORT.md` |
+| WebGPU viewer | `anny-cloth-webgpu.html`, `web/` | Three.js `WebGPURenderer` playback of simulated outfits |
+| Headless capture | `scripts/capture_webgpu.mjs` | Renders frames in Chromium and fails unless the backend is WebGPU (hardware GPU, else SwiftShader) |
+| Physics notes | `docs/PHYSICS_PRINCIPLES_zh.md` | How the cloth simulation works (Chinese) |
 
 ```bash
-python3 -m pip install -r requirements.txt
-npm install -g --ignore-scripts eagent
-export ANTHROPIC_AUTH_TOKEN=...      # or configure another provider profile
-eagent                               # trust the folder and approve the `fashion` MCP server
-> /design-garment relaxed white cotton tee for a 170 cm person, chest 90, waist 74, shoulder 42
+python3 -m pip install -r requirements.txt   # physics backend (+ `pip install anny roma` for the Anny body)
+npm install                                  # playwright-core for WebGPU capture
+export ANTHROPIC_AUTH_TOKEN=...              # or a provider profile in ~/.easy-agent/settings.json
+bin/fashion-agent                            # builds agent/ on first run; trust the folder
+> /design-garment relaxed white cotton tee for a 128 cm child, then render the outfit
 ```
 
-Each `run_tryon` call writes `outputs/design_sessions/<design_id>/iter_NN/`
-(OBJ, preview PNG, rollout GIF, preflight JSON, `agent_iteration.json`) and
-returns the gate results plus the preview image, so the model can look at the
-drape. Only T-shirts are simulated end to end; other garment types get
-body-graded construction hypotheses. If `python3` on `PATH` lacks the
-requirements, point `command` in `.mcp.json` at the right interpreter.
+`.mcp.json` starts the server with `python3`; point `command` at the
+interpreter that has the requirements if `python3` on `PATH` does not.
+
+Headless WebGPU capture of any scene:
+
+```bash
+CHROMIUM_PATH=/path/to/chrome node scripts/capture_webgpu.mjs \
+  --scene anny-skirt-walk-one-step-2s-contactfix-v10-webgpu --yaws 0,35 --out outputs/renders
+```
 
 ## Run
 

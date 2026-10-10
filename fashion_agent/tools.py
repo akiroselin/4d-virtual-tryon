@@ -10,12 +10,21 @@ from __future__ import annotations
 
 from dataclasses import asdict, fields
 import json
+import os
 from pathlib import Path
 import re
+import shutil
+import subprocess
+import sys
 from typing import Any, Callable
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_SESSIONS_DIR = ROOT / "outputs" / "design_sessions"
+OUTFITS_DIR = ROOT / "outputs" / "outfits"
+SCENES_DIR = ROOT / "web" / "scenes"
+BODY_MESH = ROOT / "assets" / "body_meshes" / "anny_child_neutral.obj"
+
+ProgressCallback = Callable[[int, int, str], None]
 
 # Only this family has an end-to-end pattern -> drape -> fit-gate route in
 # ``aigc_fashion.pipeline.run_pipeline``; other families stop at hypotheses.
@@ -292,6 +301,155 @@ def compare_iterations(design_id: str, sessions_dir: Path = DEFAULT_SESSIONS_DIR
     return {"design_id": design_id, "iterations": rows}
 
 
+def _run_step(command: list[str], log_path: Path) -> None:
+    """Run one physics stage as a subprocess; raise with the log tail on failure."""
+
+    env = dict(os.environ)
+    env.setdefault("ANNY_CACHE_DIR", str(ROOT / "work" / "anny_cache"))
+    env.setdefault("WARP_CACHE_PATH", str(ROOT / "work" / "warp_cache"))
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    with log_path.open("w", encoding="utf-8") as log:
+        completed = subprocess.run(command, cwd=ROOT, env=env, stdout=log, stderr=subprocess.STDOUT)
+    if completed.returncode != 0:
+        tail = log_path.read_text(encoding="utf-8", errors="replace").strip().splitlines()[-12:]
+        raise ToolError(f"stage failed ({' '.join(command[1:3])}); log {log_path}:\n" + "\n".join(tail))
+
+
+def list_outfit_scenes() -> dict[str, Any]:
+    """Outfit scenes that the Three.js WebGPU viewer can play."""
+
+    scenes = []
+    for manifest_path in sorted(SCENES_DIR.glob("*/scene.json")):
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        scenes.append(
+            {
+                "scene": manifest_path.parent.name,
+                "frames": manifest.get("frameCount"),
+                "physical_duration_s": manifest.get("physicalDurationSeconds"),
+                "physics_audit": manifest.get("physicsAudit"),
+                "viewer_url": f"anny-cloth-webgpu.html?scene={manifest_path.parent.name}",
+            }
+        )
+    return {"scenes": scenes}
+
+
+def simulate_outfit(
+    outfit_id: str,
+    shirt_image: str,
+    skirt_image: str,
+    quality: str = "preview",
+    progress: ProgressCallback | None = None,
+) -> dict[str, Any]:
+    """Simulate a T-shirt + pleated-skirt outfit on the Anny body and export a WebGPU scene.
+
+    Stages (each one an existing repository runner): image-fitted T-shirt pattern ->
+    implicit-shell T-shirt dynamics -> pleated-skirt dynamics -> unified two-garment
+    4D scene with layered contact -> Three.js binary scene in web/scenes/<outfit_id>.
+    """
+
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}", outfit_id):
+        raise ToolError("outfit_id must be 1-64 characters of letters, digits, '-' or '_'")
+    if quality not in ("preview", "full"):
+        raise ToolError("quality must be 'preview' or 'full'")
+    images = {"shirt_image": Path(shirt_image), "skirt_image": Path(skirt_image)}
+    for name, path in images.items():
+        if not (path if path.is_absolute() else ROOT / path).is_file():
+            raise ToolError(f"{name} not found: {path}")
+    python = sys.executable
+    out = OUTFITS_DIR / outfit_id
+    logs = out / "logs"
+    preview = quality == "preview"
+    shirt_steps = ["--training-steps", "60", "--minimum-training-steps", "30"] if preview else []
+    skirt_steps = ["--training-steps", "40", "--minimum-training-steps", "20"] if preview else []
+    body = ["--body-mesh", str(BODY_MESH)]
+    stages: list[tuple[str, list[str]]] = []
+    if not BODY_MESH.is_file():
+        stages.append(
+            (
+                "export Anny child body mesh",
+                [python, "scripts/export_anny_body_obj.py", "--output", str(BODY_MESH), "--height-cm", "128", "--gender", "0.5"],
+            )
+        )
+    stages += [
+        (
+            "fit T-shirt pattern to image and body",
+            [python, "examples/run_mvp.py", "--texture-image", shirt_image, "--fit-from-image", *body,
+             "--body-mesh-source-up-axis", "z", "--body-mesh-source-front-axis=-y", "--steps", "16",
+             "--out-dir", str(out / "pattern")],
+        ),
+        (
+            "simulate implicit-shell T-shirt",
+            [python, "examples/run_anny_cloth4d.py", "--texture-image", shirt_image, *body,
+             "--pattern-spec", str(out / "pattern" / "image_conditioned_tshirt_spec.json"),
+             "--implicit-shell-target-faces", "700", *shirt_steps, "--out-dir", str(out / "tshirt")],
+        ),
+        (
+            "simulate pleated skirt",
+            [python, "examples/run_anny_pleated_skirt.py", "--image", skirt_image, *body,
+             "--shell-reconstruction", "direct", *skirt_steps, "--out-dir", str(out / "skirt")],
+        ),
+        (
+            "simulate both garments in one 4D scene",
+            [python, "examples/run_unified_anny_cloth4d.py", *body, "--shirt-texture", shirt_image,
+             "--skirt-image", skirt_image, "--shirt-run", str(out / "tshirt"), "--skirt-run", str(out / "skirt"),
+             "--out-dir", str(out / "unified")],
+        ),
+        (
+            "export Three.js WebGPU scene",
+            [python, "scripts/export_threejs_scene.py", *body, "--run-dir", str(out / "unified"),
+             "--shirt-field-run", str(out / "unified"), "--shirt-mesh-run", str(out / "tshirt"),
+             "--skirt-run", str(out / "skirt"), "--skirt-image", skirt_image, "--shirt-texture", shirt_image,
+             "--output-dir", str(SCENES_DIR / outfit_id)],
+        ),
+    ]
+    for index, (label, command) in enumerate(stages):
+        if progress is not None:
+            progress(index, len(stages), label)
+        _run_step(command, logs / f"{index:02d}.log")
+    if progress is not None:
+        progress(len(stages), len(stages), "done")
+    manifest = json.loads((SCENES_DIR / outfit_id / "scene.json").read_text(encoding="utf-8"))
+    return {
+        "outfit_id": outfit_id,
+        "scene": outfit_id,
+        "quality": quality,
+        "frames": manifest.get("frameCount"),
+        "physical_duration_s": manifest.get("physicalDurationSeconds"),
+        "physics_audit": manifest.get("physicsAudit"),
+        "run_dir": str(out),
+        "viewer_url": f"anny-cloth-webgpu.html?scene={outfit_id}",
+        "limits": "Uncalibrated research solver on a single Anny child body; product images give garment family, "
+        "silhouette and appearance, while metric scale comes from the body.",
+    }
+
+
+def render_outfit(
+    scene: str,
+    yaw_degrees: list[float] | None = None,
+    phase: float = 0.5,
+) -> dict[str, Any]:
+    """Render an outfit scene with the Three.js WebGPU viewer in headless Chromium."""
+
+    if not (SCENES_DIR / scene / "scene.json").is_file():
+        raise ToolError(f"unknown scene {scene!r}; call list_outfit_scenes")
+    node = shutil.which("node")
+    if node is None:
+        raise ToolError("Node.js is required for render_outfit (scripts/capture_webgpu.mjs)")
+    if not (ROOT / "node_modules" / "playwright-core").is_dir():
+        raise ToolError("run `npm install` at the repository root first (playwright-core)")
+    yaws = yaw_degrees or [0, 35]
+    command = [
+        node, "scripts/capture_webgpu.mjs", "--scene", scene, "--out", "outputs/renders",
+        "--phases", str(float(phase)), "--yaws", ",".join(str(float(y)).rstrip("0").rstrip(".") for y in yaws),
+    ]
+    completed = subprocess.run(command, cwd=ROOT, capture_output=True, text=True, timeout=900)
+    if completed.returncode != 0:
+        raise ToolError(f"WebGPU capture failed: {completed.stderr.strip()[-1500:]}")
+    result = json.loads(completed.stdout[completed.stdout.index("{"):])
+    result["artifacts"] = {"frames": [str(ROOT / frame) for frame in result["frames"]]}
+    return result
+
+
 _INTENT_SCHEMA = {
     "type": "object",
     "description": "Structured garment intent.",
@@ -389,11 +547,60 @@ TOOLS: dict[str, tuple[Callable[..., dict[str, Any]], str, dict[str, Any]]] = {
 }
 
 
-def call_tool(name: str, arguments: dict[str, Any] | None) -> dict[str, Any]:
+TOOLS.update(
+    {
+        "list_outfit_scenes": (
+            list_outfit_scenes,
+            "List outfit scenes (web/scenes/*) the Three.js WebGPU viewer can play, with their physics audit.",
+            {"type": "object", "properties": {}},
+        ),
+        "simulate_outfit": (
+            simulate_outfit,
+            "Simulate a T-shirt + pleated-skirt outfit on the Anny child body from two product images and export "
+            "a Three.js WebGPU scene named after outfit_id. Runs the full physics chain (pattern fit, implicit-shell "
+            "T-shirt, pleated skirt, unified layered 4D scene). Slow: about 15-30 min on CPU for 'preview', longer "
+            "for 'full'. Reports progress per stage.",
+            {
+                "type": "object",
+                "properties": {
+                    "outfit_id": {"type": "string"},
+                    "shirt_image": {"type": "string", "description": "T-shirt product image (front print is extracted)."},
+                    "skirt_image": {"type": "string", "description": "Pleated-skirt product image (plain background)."},
+                    "quality": {"type": "string", "enum": ["preview", "full"], "default": "preview"},
+                },
+                "required": ["outfit_id", "shirt_image", "skirt_image"],
+            },
+        ),
+        "render_outfit": (
+            render_outfit,
+            "Render an outfit scene with Three.js on the WebGPU backend (headless Chromium; hardware GPU, else "
+            "SwiftShader). Fails rather than falling back to WebGL. Returns the frames as images.",
+            {
+                "type": "object",
+                "properties": {
+                    "scene": {"type": "string"},
+                    "yaw_degrees": {"type": "array", "items": {"type": "number"}, "description": "Camera orbit angles."},
+                    "phase": {"type": "number", "minimum": 0, "maximum": 1, "default": 0.5},
+                },
+                "required": ["scene"],
+            },
+        ),
+    }
+)
+
+
+def call_tool(
+    name: str,
+    arguments: dict[str, Any] | None,
+    progress: ProgressCallback | None = None,
+) -> dict[str, Any]:
     if name not in TOOLS:
         raise ToolError(f"unknown tool {name!r}")
     function = TOOLS[name][0]
-    return function(**(arguments or {}))
+    arguments = dict(arguments or {})
+    if progress is not None and name == "simulate_outfit":
+        arguments["progress"] = progress
+    return function(**arguments)
 
 
 def tool_field_names() -> dict[str, list[str]]:

@@ -86,7 +86,7 @@ def test_mcp_server_stdio_handshake_and_tool_call(tmp_path):
             "jsonrpc": "2.0",
             "id": 3,
             "method": "tools/call",
-            "params": {"name": "parse_design_brief", "arguments": {"brief": "slim silk v-neck tee"}},
+            "params": {"name": "parse_design_brief", "arguments": {"brief": "slim silk v-neck tee"}, "_meta": {"progressToken": 7}},
         },
         {"jsonrpc": "2.0", "id": 4, "method": "tools/call", "params": {"name": "nope", "arguments": {}}},
     ]
@@ -106,3 +106,16 @@ def test_mcp_server_stdio_handshake_and_tool_call(tmp_path):
     parsed = json.loads(responses[2]["result"]["content"][0]["text"])
     assert parsed["intent"]["neckline"] == "v-neck"
     assert responses[3]["result"]["isError"] is True
+
+
+def test_outfit_tools_validate_inputs_and_list_committed_scenes():
+    scenes = {item["scene"]: item for item in call_tool("list_outfit_scenes", {})["scenes"]}
+    committed = "anny-skirt-walk-one-step-2s-contactfix-v10-webgpu"
+    assert committed in scenes
+    assert scenes[committed]["frames"] > 1
+    with pytest.raises(ToolError):
+        call_tool("render_outfit", {"scene": "does-not-exist"})
+    with pytest.raises(ToolError):
+        call_tool("simulate_outfit", {"outfit_id": "bad id!", "shirt_image": "a.png", "skirt_image": "b.png"})
+    with pytest.raises(ToolError):
+        call_tool("simulate_outfit", {"outfit_id": "ok", "shirt_image": "missing.png", "skirt_image": "missing.png"})
