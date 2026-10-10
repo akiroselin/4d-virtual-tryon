@@ -380,6 +380,10 @@ def simulate_outfit(
             "fit T-shirt pattern to image and body",
             [python, "examples/run_mvp.py", "--texture-image", shirt_image, "--fit-from-image", *body,
              "--body-mesh-source-up-axis", "z", "--body-mesh-source-front-axis=-y", "--steps", "16",
+             # The Anny child body the later stages simulate on; without these the
+             # image fit sizes the shirt for the default adult avatar.
+             "--avatar-chest-cm", "64", "--avatar-waist-cm", "56", "--avatar-shoulder-cm", "30",
+             "--avatar-height-cm", "128",
              "--out-dir", str(out / "pattern")],
         ),
         (
@@ -393,11 +397,13 @@ def simulate_outfit(
             [python, "examples/run_anny_pleated_skirt.py", "--image", skirt_image, *body,
              "--shell-reconstruction", "direct", *skirt_steps, "--out-dir", str(out / "skirt")],
         ),
+    ]
+    layered = [
         (
-            "simulate both garments in one 4D scene",
+            "simulate both garments in one layered 4D scene",
             [python, "examples/run_unified_anny_cloth4d.py", *body, "--shirt-texture", shirt_image,
              "--skirt-image", skirt_image, "--shirt-run", str(out / "tshirt"), "--skirt-run", str(out / "skirt"),
-             "--out-dir", str(out / "unified")],
+             "--frames", "9" if preview else "25", "--out-dir", str(out / "unified")],
         ),
         (
             "export Three.js WebGPU scene",
@@ -407,12 +413,35 @@ def simulate_outfit(
              "--output-dir", str(SCENES_DIR / outfit_id)],
         ),
     ]
+    separate = [
+        (
+            "export Three.js WebGPU scene (garments do not overlap)",
+            [python, "scripts/export_garment_runs_scene.py", "--shirt-run", str(out / "tshirt"),
+             "--skirt-run", str(out / "skirt"), "--shirt-texture", shirt_image, "--skirt-image", skirt_image,
+             *body, "--output-dir", str(SCENES_DIR / outfit_id)],
+        ),
+    ]
+    total = len(stages) + 1
     for index, (label, command) in enumerate(stages):
         if progress is not None:
-            progress(index, len(stages), label)
+            progress(index, total, label)
+        _run_step(command, logs / f"{index:02d}.log")
+    # Overlapping layers need the joint contact solver; a cropped top that ends
+    # above the waistband can be exported from the two garment runs directly.
+    import numpy as np
+
+    shirt_low = float(np.load(out / "tshirt" / "neuralclothsim4d_physical_rollout.npy")[:, :, 1].min())
+    skirt_high = float(np.load(out / "skirt" / "neuralclothsim4d_physical_rollout.npy")[:, :, 1].max())
+    layer_gap = shirt_low - skirt_high
+    final = separate if layer_gap >= 0.01 else layered
+    total = len(stages) + len(final)
+    for offset, (label, command) in enumerate(final):
+        index = len(stages) + offset
+        if progress is not None:
+            progress(index, total, label)
         _run_step(command, logs / f"{index:02d}.log")
     if progress is not None:
-        progress(len(stages), len(stages), "done")
+        progress(total, total, "done")
     manifest = json.loads((SCENES_DIR / outfit_id / "scene.json").read_text(encoding="utf-8"))
     return {
         "outfit_id": outfit_id,
@@ -421,6 +450,8 @@ def simulate_outfit(
         "frames": manifest.get("frameCount"),
         "physical_duration_s": manifest.get("physicalDurationSeconds"),
         "physics_audit": manifest.get("physicsAudit"),
+        "layering": "separate garment runs (no overlap)" if final is separate else "joint layered contact solve",
+        "layer_gap_m": layer_gap,
         "run_dir": str(out),
         "viewer_url": f"anny-cloth-webgpu.html?scene={outfit_id}",
         "limits": "Uncalibrated research solver on a single Anny child body; product images give garment family, "
@@ -608,8 +639,9 @@ TOOLS.update(
             simulate_outfit,
             "Simulate a T-shirt + pleated-skirt outfit on the Anny child body from two product images and export "
             "a Three.js WebGPU scene named after outfit_id. Runs the full physics chain (pattern fit, implicit-shell "
-            "T-shirt, pleated skirt, unified layered 4D scene). Slow on CPU: hours on a 4-core machine even for "
-            "'preview' (shorter physics teacher and fits); 'full' uses the runners' defaults. Reports progress per stage.",
+            "T-shirt, pleated skirt; overlapping garments then go through the joint layered contact solver). About "
+            "30-45 min on a 4-core CPU for 'preview' when the top ends above the waistband; the layered solver can "
+            "take hours. Reports progress per stage.",
             {
                 "type": "object",
                 "properties": {

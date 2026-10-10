@@ -75,6 +75,31 @@ mesh cross-sections, and a preview image. `run_tryon` accepts the mesh directly.
   JSON written by `scripts/sam3d_body_infer.py`.
 - Single-view estimates: metric scale comes from the model's priors and clothes
   hide the body, so confirm key measurements with the wearer.
+- Verified here with MHR's mean body (`docs/images/mhr_mean_body_apose.png`):
+  172.7 cm, chest 100.5, waist 95.2, hip 109.5, shoulder 40.4 cm. SAM 3D Body
+  itself was not run in this environment (its Hugging Face checkpoints are gated
+  and Hugging Face is not reachable from it).
+
+### Demo outfit rendered with Three.js on WebGPU
+
+![Cropped tee and pleated skirt, WebGPU](docs/images/webgpu_demo_outfit_front.png)
+
+`web/scenes/agent-demo-crop-tee-pleated-skirt` was produced end to end in this
+repository from two synthetic product images (`scripts/make_demo_inputs.py`):
+image-fitted T-shirt pattern → implicit-shell T-shirt dynamics → pleated-skirt
+dynamics on the Anny child body (`scripts/export_anny_body_obj.py`), exported
+with `scripts/export_garment_runs_scene.py` and rendered by
+`scripts/capture_webgpu.mjs` (WebGPU backend; here Chromium's SwiftShader
+adapter). The cropped tee ends 3.2 cm above the waistband, so the two garments
+were simulated separately and need no inter-garment contact. Overlapping layers
+go through `examples/run_unified_anny_cloth4d.py`; on a 4-core CPU that joint
+solve did not finish in usable time for this outfit (and with walking enabled it
+stopped at its contact-convergence check), so it is not used here. Both garment
+rollouts are short settling runs (0.072 s and 0.24 s) with uncalibrated
+(`material_floor`) constitutive scaling.
+
+Open it interactively with `python3 -m http.server 8769` and
+`http://127.0.0.1:8769/anny-cloth-webgpu.html?scene=agent-demo-crop-tee-pleated-skirt`.
 
 Headless WebGPU capture of any scene:
 
