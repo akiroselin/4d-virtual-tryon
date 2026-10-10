@@ -15,16 +15,18 @@ from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFilter
 
-BACKGROUND = (246, 246, 244)
+# Brighter than the 248 threshold image_fit uses to separate a white tee from the backdrop.
+BACKGROUND = (252, 252, 250)
 
 
 def tshirt_image(path: Path, size: int = 768) -> Path:
+    """A cropped tee: its hem should land on the waistband of the demo skirt."""
     image = Image.new("RGB", (size, size), BACKGROUND)
     draw = ImageDraw.Draw(image)
     s = size / 768.0
     body = [
         (250, 110), (318, 92), (384, 128), (450, 92), (518, 110),
-        (668, 228), (604, 318), (548, 276), (548, 690), (220, 690),
+        (668, 228), (604, 318), (548, 276), (548, 490), (220, 490),
         (220, 276), (164, 318), (100, 228),
     ]
     draw.polygon([(x * s, y * s) for x, y in body], fill=(238, 236, 230), outline=(205, 203, 198))

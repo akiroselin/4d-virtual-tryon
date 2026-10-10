@@ -2324,7 +2324,7 @@ class UnifiedNeuralCloth4DScene:
             }
             gaps = self._event_values(result)
             raise RuntimeError(
-                "shared body/inter-garment contact resolution did not converge: "
+                f"shared body/inter-garment contact resolution did not converge at t={time:.4f} s: "
                 f"metric={diagnostics}, gaps={gaps}"
             )
         for system in self.systems:

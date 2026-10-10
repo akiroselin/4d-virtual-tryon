@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+import weakref
 
 import numpy as np
 from PIL import Image, ImageDraw
@@ -11,7 +12,7 @@ from .data import GarmentMesh
 
 _TEXTURE_BBOX_CACHE: dict[int, tuple[int, int, int, int]] = {}
 _FRONT_BODY_BBOX_CACHE: dict[int, tuple[np.ndarray, np.ndarray]] = {}
-_DISPLAY_EDGE_CACHE: dict[int, np.ndarray] = {}
+_DISPLAY_EDGE_CACHE: dict[int, tuple[weakref.ref, np.ndarray]] = {}
 _AVATAR_LAYER_CACHE: dict[tuple[object, ...], Image.Image] = {}
 _TEXTURE_ARRAY_CACHE: dict[int, np.ndarray] = {}
 
@@ -635,10 +636,12 @@ def _soft_edge(fill: tuple[int, int, int]) -> tuple[int, int, int]:
 
 
 def _display_edges(mesh: GarmentMesh) -> np.ndarray:
+    # id() values are reused once a mesh is garbage-collected, so keep a weak
+    # reference and only trust an entry that still points at this mesh.
     key = id(mesh)
     cached = _DISPLAY_EDGE_CACHE.get(key)
-    if cached is not None:
-        return cached
+    if cached is not None and cached[0]() is mesh:
+        return cached[1]
 
     counts: dict[tuple[int, int], int] = {}
     for a, b, c in mesh.faces:
@@ -647,7 +650,7 @@ def _display_edges(mesh: GarmentMesh) -> np.ndarray:
             counts[edge] = counts.get(edge, 0) + 1
     boundary_edges = {edge for edge, count in counts.items() if count == 1}
     edges = np.asarray(sorted(boundary_edges), dtype=np.int32)
-    _DISPLAY_EDGE_CACHE[key] = edges
+    _DISPLAY_EDGE_CACHE[key] = (weakref.ref(mesh), edges)
     return edges
 
 
