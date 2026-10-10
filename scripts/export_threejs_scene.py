@@ -359,7 +359,7 @@ def main() -> None:
     scene_manifest = {
         "format": "NeuralClothSim4D Three.js binary scene v1",
         "renderer": "Three.js WebGPURenderer",
-        "threeVersion": "0.185.1",
+        "threeVersion": "0.184.0",
         "units": "meters",
         "upAxis": "+Y",
         "frontAxis": "+Z",

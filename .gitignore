@@ -15,3 +15,4 @@ assets/mocap/
 submission/*.aiff
 submission/*.mp4
 submission/webgpu_frames/
+node_modules/

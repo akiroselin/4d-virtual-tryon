@@ -2,7 +2,8 @@ import * as THREE from "three/webgpu";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 
 const query = new URLSearchParams(window.location.search);
-const sceneName = query.get("scene") || "anny-no-amr-fast-v1";
+// The default must be a scene committed under web/scenes/.
+const sceneName = query.get("scene") || "anny-skirt-walk-one-step-2s-contactfix-v10-webgpu";
 const SCENE_ROOT = `./web/scenes/${sceneName}/`;
 const canvas = document.querySelector("#viewport");
 const loading = document.querySelector("#loading");
@@ -93,6 +94,13 @@ try {
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
   renderer.toneMappingExposure = 1.05;
   renderer.shadowMap.enabled = true;
+  let deviceLost = null;
+  renderer.onDeviceLost = (info) => {
+    deviceLost = info?.message || "unknown";
+    errorBox.hidden = false;
+    errorBox.textContent = `WebGPU device lost: ${deviceLost}`;
+    backendBadge.textContent = "GPU DEVICE LOST";
+  };
   await renderer.init();
 
   const usingWebGPU = renderer.backend?.isWebGPUBackend === true;
@@ -303,6 +311,31 @@ try {
   updateField(0);
   loading.hidden = true;
   renderer.setAnimationLoop(animate);
+
+  // Deterministic frame capture for scripts/capture_webgpu.mjs and the agent's
+  // render_outfit tool: pause, set the physical phase and an orbit yaw, render
+  // once and read the WebGPU canvas back (headless screenshots cannot see it).
+  window.__fashionViewer = {
+    backend: usingWebGPU ? "webgpu" : "webgl2",
+    get deviceLost() {
+      return deviceLost;
+    },
+    frameCount: manifest.frameCount,
+    async capture({ phase: capturePhase = 0.5, yawDegrees = 0 } = {}) {
+      playing = false;
+      renderer.setAnimationLoop(null);
+      updateField(capturePhase);
+      const offset = camera.position.clone().sub(controls.target);
+      offset.applyAxisAngle(new THREE.Vector3(0, 1, 0), (yawDegrees * Math.PI) / 180);
+      camera.position.copy(controls.target).add(offset);
+      camera.lookAt(controls.target);
+      renderer.render(scene, camera);
+      if (deviceLost) throw new Error(`WebGPU device lost: ${deviceLost}`);
+      const image = canvas.toDataURL("image/png");
+      camera.position.copy(controls.target).add(offset.applyAxisAngle(new THREE.Vector3(0, 1, 0), (-yawDegrees * Math.PI) / 180));
+      return image;
+    },
+  };
 
   if (query.get("record") === "1" && typeof canvas.captureStream === "function") {
     const stream = canvas.captureStream(30);
