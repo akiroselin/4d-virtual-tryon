@@ -86,7 +86,7 @@ def _supported_phenotypes(model: object, values: dict[str, float]) -> dict[str, 
         if candidate is not None:
             names.update(str(item) for item in candidate)
     return {
-        name: torch.tensor([[value]], dtype=torch.float32)
+        name: torch.tensor([value], dtype=torch.float32)
         for name, value in values.items()
         if name in names
     }

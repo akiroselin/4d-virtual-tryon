@@ -5,3 +5,4 @@ torch>=2.1
 trimesh>=4.0
 rtree>=1.2
 scikit-image>=0.21
+fast-simplification>=0.1

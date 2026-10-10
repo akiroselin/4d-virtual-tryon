@@ -36,6 +36,22 @@ class ImplicitShellBuildReport:
         return data
 
 
+def _crotch_height(body_vertices: np.ndarray, low_y: float, high_y: float) -> float | None:
+    """Top of the leg gap: scanning up from ``low_y``, the last height whose
+    horizontal slice has no body surface on the midline. ``None`` if the slice
+    at ``low_y`` already reaches the midline (the hem is above the crotch)."""
+
+    crotch = None
+    for y in np.arange(low_y, high_y, 0.005):
+        band = body_vertices[np.abs(body_vertices[:, 1] - y) < 0.006]
+        if len(band) == 0:
+            continue
+        if float(np.abs(band[:, 0]).min()) <= 0.012:
+            break
+        crotch = float(y)
+    return crotch
+
+
 def build_body_sdf_tshirt_shell(
     avatar: BodyMeshAvatar,
     panel_atlas: GarmentMesh,
@@ -75,6 +91,11 @@ def build_body_sdf_tshirt_shell(
         0.98 * body_length,
         0.46 * float(avatar.spec.height_cm) / 100.0,
     )
+    # A hem below the crotch would wrap each leg separately and split the hem
+    # into two loops, so the shell could not be a T-shirt. Keep it above.
+    crotch_y = _crotch_height(body_vertices, hem_y, top_y)
+    if crotch_y is not None:
+        hem_y = max(hem_y, crotch_y + 0.03)
     torso_width = np.interp(
         centroids[:, 1],
         avatar._profile_y,
