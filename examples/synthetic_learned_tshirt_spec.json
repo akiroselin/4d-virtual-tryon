@@ -1,0 +1,49 @@
+{
+  "properties": {
+    "units_in_meter": 100
+  },
+  "pattern": {
+    "panels": {
+      "front": {
+        "vertices": [[-17.5, -20.0], [17.5, -20.0], [17.5, 8.0], [14.0, 13.0], [8.0, 19.0], [6.0, 20.0], [-6.0, 20.0], [-8.0, 19.0], [-14.0, 13.0], [-17.5, 8.0]],
+        "edges": [{"endpoints": [0, 1]}, {"endpoints": [1, 2]}, {"endpoints": [2, 3], "curvature": [0.5, -0.16]}, {"endpoints": [3, 4]}, {"endpoints": [4, 5]}, {"endpoints": [5, 6], "curvature": [0.5, 0.34]}, {"endpoints": [6, 7]}, {"endpoints": [7, 8]}, {"endpoints": [8, 9], "curvature": [0.5, -0.16]}, {"endpoints": [9, 0]}],
+        "translation": [0, 0, 0],
+        "rotation": [0, 0, 0]
+      },
+      "back": {
+        "vertices": [[-17.5, -20.0], [17.5, -20.0], [17.5, 8.0], [14.0, 13.0], [8.0, 19.0], [6.0, 20.0], [-6.0, 20.0], [-8.0, 19.0], [-14.0, 13.0], [-17.5, 8.0]],
+        "edges": [{"endpoints": [0, 1]}, {"endpoints": [1, 2]}, {"endpoints": [2, 3], "curvature": [0.5, -0.12]}, {"endpoints": [3, 4]}, {"endpoints": [4, 5]}, {"endpoints": [5, 6], "curvature": [0.5, 0.16]}, {"endpoints": [6, 7]}, {"endpoints": [7, 8]}, {"endpoints": [8, 9], "curvature": [0.5, -0.12]}, {"endpoints": [9, 0]}],
+        "translation": [0, 0, 0],
+        "rotation": [0, 0, 0]
+      },
+      "left_sleeve": {
+        "vertices": [[0.0, -5.5], [15.0, -4.5], [15.0, 4.5], [0.0, 5.5], [-1.5, 3.0], [-2.5, 0.0], [-1.5, -3.0]],
+        "edges": [{"endpoints": [0, 1]}, {"endpoints": [1, 2]}, {"endpoints": [2, 3]}, {"endpoints": [3, 4], "curvature": [0.5, 0.08]}, {"endpoints": [4, 5], "curvature": [0.5, 0.10]}, {"endpoints": [5, 6], "curvature": [0.5, 0.10]}, {"endpoints": [6, 0], "curvature": [0.5, 0.08]}],
+        "translation": [0, 0, 0],
+        "rotation": [0, 0, 0]
+      },
+      "right_sleeve": {
+        "vertices": [[0.0, -5.5], [15.0, -4.5], [15.0, 4.5], [0.0, 5.5], [-1.5, 3.0], [-2.5, 0.0], [-1.5, -3.0]],
+        "edges": [{"endpoints": [0, 1]}, {"endpoints": [1, 2]}, {"endpoints": [2, 3]}, {"endpoints": [3, 4], "curvature": [0.5, 0.08]}, {"endpoints": [4, 5], "curvature": [0.5, 0.10]}, {"endpoints": [5, 6], "curvature": [0.5, 0.10]}, {"endpoints": [6, 0], "curvature": [0.5, 0.08]}],
+        "translation": [0, 0, 0],
+        "rotation": [0, 0, 0]
+      }
+    },
+    "stitches": [
+      [{"panel": "front", "edge": 1}, {"panel": "back", "edge": 1}],
+      [{"panel": "front", "edge": 9}, {"panel": "back", "edge": 9}],
+      [{"panel": "front", "edge": 4}, {"panel": "back", "edge": 4}],
+      [{"panel": "front", "edge": 6}, {"panel": "back", "edge": 6}],
+      [{"panel": "left_sleeve", "edge": 6}, {"panel": "front", "edge": 8}],
+      [{"panel": "left_sleeve", "edge": 5}, {"panel": "front", "edge": 7}],
+      [{"panel": "left_sleeve", "edge": 4}, {"panel": "back", "edge": 7}],
+      [{"panel": "left_sleeve", "edge": 3}, {"panel": "back", "edge": 8}],
+      [{"panel": "right_sleeve", "edge": 6}, {"panel": "front", "edge": 2}],
+      [{"panel": "right_sleeve", "edge": 5}, {"panel": "front", "edge": 3}],
+      [{"panel": "right_sleeve", "edge": 4}, {"panel": "back", "edge": 3}],
+      [{"panel": "right_sleeve", "edge": 3}, {"panel": "back", "edge": 2}],
+      [{"panel": "left_sleeve", "edge": 0}, {"panel": "left_sleeve", "edge": 2}],
+      [{"panel": "right_sleeve", "edge": 0}, {"panel": "right_sleeve", "edge": 2}]
+    ]
+  }
+}

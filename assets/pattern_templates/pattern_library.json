@@ -1,0 +1,228 @@
+{
+  "schema_version": 2,
+  "providers": {
+    "project_local": {
+      "name": "AIGC Fashion local pattern program",
+      "license": "project-owned",
+      "commercial_use": true,
+      "role": "runtime fallback"
+    },
+    "garmentcode": {
+      "name": "GarmentCode",
+      "license": "MIT",
+      "commercial_use": true,
+      "role": "preferred parametric pattern generator"
+    },
+    "sewformer": {
+      "name": "SewFormer/SewFactory",
+      "license": "no repository license; research use only until separately cleared",
+      "commercial_use": false,
+      "role": "learned proposal and topology reference"
+    }
+  },
+  "default_provider_priority": ["garmentcode"],
+  "templates": [
+    {
+      "id": "knit_tshirt_short_sleeve_v1",
+      "garment_type": "t-shirt",
+      "aliases": ["tee", "t shirt", "short sleeve top", "crew neck t-shirt"],
+      "generator": "tshirt_v1",
+      "status": "implemented",
+      "provider_priority": ["project_local", "garmentcode", "sewformer"],
+      "topology": "front_back_bodice_with_whole_set_in_sleeves",
+      "layer": "upper_body",
+      "material_families": ["jersey knit", "interlock knit"],
+      "required_measurements": ["chest_circumference", "shoulder_width", "body_length", "upper_arm_circumference"],
+      "parameters": {
+        "chest_ease_cm": [2.0, 20.0],
+        "body_length_cm": [30.0, 90.0],
+        "shoulder_width_cm": [22.0, 60.0],
+        "sleeve_length_cm": [8.0, 35.0],
+        "sleeve_opening_cm": [14.0, 50.0],
+        "armhole_circumference_cm": [16.0, 65.0],
+        "neck_width_cm": [9.0, 25.0]
+      },
+      "panels": [
+        {"role": "front_body", "shape_family": "bodice_crew_neck_armhole", "quantity": 1, "mirror": false, "grainline": "center_front"},
+        {"role": "back_body", "shape_family": "bodice_shallow_neck_armhole", "quantity": 1, "mirror": false, "grainline": "center_back"},
+        {"role": "left_sleeve", "shape_family": "set_in_short_sleeve_one_piece", "quantity": 1, "mirror": false, "grainline": "sleeve_center"},
+        {"role": "right_sleeve", "shape_family": "set_in_short_sleeve_one_piece", "quantity": 1, "mirror": true, "grainline": "sleeve_center"}
+      ],
+      "seams": [
+        {"id": "left_side", "a": "front_body.left_side", "b": "back_body.left_side"},
+        {"id": "right_side", "a": "front_body.right_side", "b": "back_body.right_side"},
+        {"id": "left_shoulder", "a": "front_body.left_shoulder", "b": "back_body.left_shoulder"},
+        {"id": "right_shoulder", "a": "front_body.right_shoulder", "b": "back_body.right_shoulder"},
+        {"id": "left_armhole_front", "a": "front_body.left_armhole", "b": "left_sleeve.front_cap"},
+        {"id": "left_armhole_back", "a": "back_body.left_armhole", "b": "left_sleeve.back_cap"},
+        {"id": "right_armhole_front", "a": "front_body.right_armhole", "b": "right_sleeve.front_cap"},
+        {"id": "right_armhole_back", "a": "back_body.right_armhole", "b": "right_sleeve.back_cap"},
+        {"id": "left_sleeve_underarm", "a": "left_sleeve.underarm_front", "b": "left_sleeve.underarm_back"},
+        {"id": "right_sleeve_underarm", "a": "right_sleeve.underarm_front", "b": "right_sleeve.underarm_back"}
+      ]
+    },
+    {
+      "id": "knit_tshirt_long_sleeve_v1",
+      "garment_type": "long-sleeve t-shirt",
+      "aliases": ["long sleeve tee", "long sleeve top"],
+      "generator": "tshirt_long_sleeve_v1",
+      "status": "planned",
+      "layer": "upper_body",
+      "material_families": ["jersey knit", "interlock knit"],
+      "required_measurements": ["chest_circumference", "shoulder_width", "arm_length", "wrist_circumference"],
+      "parameters": {"chest_ease_cm": [2.0, 20.0], "sleeve_length_cm": [30.0, 75.0]},
+      "panels": [
+        {"role": "front_body", "shape_family": "bodice_crew_neck_armhole", "quantity": 1, "mirror": false, "grainline": "center_front"},
+        {"role": "back_body", "shape_family": "bodice_shallow_neck_armhole", "quantity": 1, "mirror": false, "grainline": "center_back"},
+        {"role": "left_sleeve", "shape_family": "set_in_long_sleeve", "quantity": 1, "mirror": false, "grainline": "sleeve_center"},
+        {"role": "right_sleeve", "shape_family": "set_in_long_sleeve", "quantity": 1, "mirror": true, "grainline": "sleeve_center"}
+      ],
+      "seams": []
+    },
+    {
+      "id": "woven_button_shirt_v1",
+      "garment_type": "button-shirt",
+      "aliases": ["shirt", "button down", "blouse"],
+      "generator": "button_shirt_v1",
+      "status": "planned",
+      "layer": "upper_body",
+      "material_families": ["woven cotton", "linen", "silk woven"],
+      "required_measurements": ["chest_circumference", "neck_circumference", "shoulder_width", "arm_length"],
+      "parameters": {"chest_ease_cm": [6.0, 24.0], "collar_height_cm": [2.0, 6.0]},
+      "panels": [
+        {"role": "left_front", "shape_family": "button_front_bodice", "quantity": 1, "mirror": false, "grainline": "center_front"},
+        {"role": "right_front", "shape_family": "button_front_bodice", "quantity": 1, "mirror": true, "grainline": "center_front"},
+        {"role": "back", "shape_family": "shirt_back_with_yoke", "quantity": 1, "mirror": false, "grainline": "center_back"},
+        {"role": "sleeve", "shape_family": "set_in_shirt_sleeve", "quantity": 2, "mirror": true, "grainline": "sleeve_center"},
+        {"role": "collar", "shape_family": "two_piece_collar", "quantity": 2, "mirror": false, "grainline": "collar_center"},
+        {"role": "cuff", "shape_family": "rectangular_cuff", "quantity": 2, "mirror": true, "grainline": "cuff_length"}
+      ],
+      "seams": []
+    },
+    {
+      "id": "knit_hoodie_v1",
+      "garment_type": "hoodie",
+      "aliases": ["hooded sweatshirt", "zip hoodie"],
+      "generator": "hoodie_v1",
+      "status": "planned",
+      "layer": "upper_body",
+      "material_families": ["sweatshirt fleece", "heavy jersey"],
+      "required_measurements": ["chest_circumference", "head_circumference", "shoulder_width", "arm_length"],
+      "parameters": {"chest_ease_cm": [10.0, 32.0], "hood_depth_cm": [24.0, 42.0]},
+      "panels": [
+        {"role": "front_body", "shape_family": "hoodie_bodice", "quantity": 1, "mirror": false, "grainline": "center_front"},
+        {"role": "back_body", "shape_family": "hoodie_back", "quantity": 1, "mirror": false, "grainline": "center_back"},
+        {"role": "sleeve", "shape_family": "hoodie_long_sleeve", "quantity": 2, "mirror": true, "grainline": "sleeve_center"},
+        {"role": "hood_side", "shape_family": "two_piece_hood", "quantity": 2, "mirror": true, "grainline": "hood_front"},
+        {"role": "waist_rib", "shape_family": "rib_band", "quantity": 1, "mirror": false, "grainline": "band_length"},
+        {"role": "cuff_rib", "shape_family": "rib_band", "quantity": 2, "mirror": true, "grainline": "band_length"}
+      ],
+      "seams": []
+    },
+    {
+      "id": "sleeveless_tank_v1",
+      "garment_type": "tank-top",
+      "aliases": ["tank", "camisole", "sleeveless top"],
+      "generator": "tank_top_v1",
+      "status": "planned",
+      "layer": "upper_body",
+      "material_families": ["jersey knit", "rib knit"],
+      "required_measurements": ["chest_circumference", "shoulder_width", "body_length"],
+      "parameters": {"chest_ease_cm": [-4.0, 14.0], "strap_width_cm": [1.0, 8.0]},
+      "panels": [
+        {"role": "front_body", "shape_family": "sleeveless_bodice", "quantity": 1, "mirror": false, "grainline": "center_front"},
+        {"role": "back_body", "shape_family": "sleeveless_back", "quantity": 1, "mirror": false, "grainline": "center_back"}
+      ],
+      "seams": []
+    },
+    {
+      "id": "one_piece_dress_v1",
+      "garment_type": "dress",
+      "aliases": ["one piece dress", "gown", "mini dress", "midi dress"],
+      "generator": "dress_v1",
+      "status": "planned",
+      "layer": "full_body",
+      "material_families": ["woven", "jersey knit"],
+      "required_measurements": ["chest_circumference", "waist_circumference", "hip_circumference", "dress_length"],
+      "parameters": {"waist_ease_cm": [0.0, 20.0], "skirt_flare_ratio": [1.0, 3.5]},
+      "panels": [
+        {"role": "front_bodice", "shape_family": "dress_bodice", "quantity": 1, "mirror": false, "grainline": "center_front"},
+        {"role": "back_bodice", "shape_family": "dress_back", "quantity": 1, "mirror": false, "grainline": "center_back"},
+        {"role": "front_skirt", "shape_family": "skirt_panel", "quantity": 1, "mirror": false, "grainline": "center_front"},
+        {"role": "back_skirt", "shape_family": "skirt_panel", "quantity": 1, "mirror": false, "grainline": "center_back"}
+      ],
+      "seams": []
+    },
+    {
+      "id": "basic_skirt_v1",
+      "garment_type": "skirt",
+      "aliases": ["a-line skirt", "pencil skirt", "mini skirt"],
+      "generator": "skirt_v1",
+      "status": "planned",
+      "layer": "lower_body",
+      "material_families": ["woven", "jersey knit"],
+      "required_measurements": ["waist_circumference", "hip_circumference", "skirt_length"],
+      "parameters": {"waist_ease_cm": [0.0, 8.0], "hem_sweep_cm": [60.0, 300.0]},
+      "panels": [
+        {"role": "front", "shape_family": "skirt_panel", "quantity": 1, "mirror": false, "grainline": "center_front"},
+        {"role": "back", "shape_family": "skirt_panel", "quantity": 1, "mirror": false, "grainline": "center_back"},
+        {"role": "waistband", "shape_family": "contoured_waistband", "quantity": 1, "mirror": false, "grainline": "waistline"}
+      ],
+      "seams": []
+    },
+    {
+      "id": "basic_trousers_v1",
+      "garment_type": "trousers",
+      "aliases": ["pants", "jeans", "slacks"],
+      "generator": "trousers_v1",
+      "status": "planned",
+      "layer": "lower_body",
+      "material_families": ["woven", "denim", "stretch woven"],
+      "required_measurements": ["waist_circumference", "hip_circumference", "inseam", "thigh_circumference"],
+      "parameters": {"hip_ease_cm": [2.0, 18.0], "leg_opening_cm": [24.0, 70.0]},
+      "panels": [
+        {"role": "front_leg", "shape_family": "trouser_front", "quantity": 2, "mirror": true, "grainline": "leg_center"},
+        {"role": "back_leg", "shape_family": "trouser_back", "quantity": 2, "mirror": true, "grainline": "leg_center"},
+        {"role": "waistband", "shape_family": "contoured_waistband", "quantity": 1, "mirror": false, "grainline": "waistline"}
+      ],
+      "seams": []
+    },
+    {
+      "id": "basic_shorts_v1",
+      "garment_type": "shorts",
+      "aliases": ["short pants", "bermuda shorts"],
+      "generator": "shorts_v1",
+      "status": "planned",
+      "layer": "lower_body",
+      "material_families": ["woven", "denim", "jersey knit"],
+      "required_measurements": ["waist_circumference", "hip_circumference", "rise", "thigh_circumference"],
+      "parameters": {"hip_ease_cm": [2.0, 20.0], "inseam_cm": [3.0, 35.0]},
+      "panels": [
+        {"role": "front_leg", "shape_family": "short_front", "quantity": 2, "mirror": true, "grainline": "leg_center"},
+        {"role": "back_leg", "shape_family": "short_back", "quantity": 2, "mirror": true, "grainline": "leg_center"},
+        {"role": "waistband", "shape_family": "waistband", "quantity": 1, "mirror": false, "grainline": "waistline"}
+      ],
+      "seams": []
+    },
+    {
+      "id": "woven_jacket_v1",
+      "garment_type": "jacket",
+      "aliases": ["coat", "blazer", "outerwear"],
+      "generator": "jacket_v1",
+      "status": "planned",
+      "layer": "outerwear",
+      "material_families": ["woven", "denim", "coating"],
+      "required_measurements": ["chest_circumference", "shoulder_width", "arm_length", "back_length"],
+      "parameters": {"chest_ease_cm": [10.0, 34.0], "lapel_width_cm": [4.0, 14.0]},
+      "panels": [
+        {"role": "front", "shape_family": "jacket_front_with_lapel", "quantity": 2, "mirror": true, "grainline": "center_front"},
+        {"role": "back", "shape_family": "jacket_back", "quantity": 2, "mirror": true, "grainline": "center_back"},
+        {"role": "side_body", "shape_family": "jacket_side", "quantity": 2, "mirror": true, "grainline": "body_vertical"},
+        {"role": "upper_sleeve", "shape_family": "two_piece_sleeve_upper", "quantity": 2, "mirror": true, "grainline": "sleeve_center"},
+        {"role": "under_sleeve", "shape_family": "two_piece_sleeve_under", "quantity": 2, "mirror": true, "grainline": "sleeve_center"},
+        {"role": "collar", "shape_family": "tailored_collar", "quantity": 2, "mirror": false, "grainline": "collar_center"}
+      ],
+      "seams": []
+    }
+  ]
+}

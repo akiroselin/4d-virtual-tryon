@@ -1,0 +1,17 @@
+.DS_Store
+.pytest_cache/
+__pycache__/
+*.py[cod]
+outputs/
+work/
+lfs/
+web/scenes/*
+!web/scenes/anny-skirt-walk-one-step-2s-contactfix-v10-webgpu/
+!web/scenes/anny-skirt-walk-one-step-2s-contactfix-v10-webgpu/**
+!web/scenes/anny-skirt-walk-one-step-2s-soft072-webgpu/
+!web/scenes/anny-skirt-walk-one-step-2s-soft072-webgpu/**
+assets/body_meshes/
+assets/mocap/
+submission/*.aiff
+submission/*.mp4
+submission/webgpu_frames/
