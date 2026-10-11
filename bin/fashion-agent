@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# Start the Fashion Design Agent (agent/, an Easy Agent fork) from the
+# repository root, so it loads .mcp.json (the `fashion` physics server),
+# .easy-agent/ (skills, settings) and AGENTS.md. Arguments pass through to eagent.
+set -euo pipefail
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+AGENT="$ROOT/agent"
+if [ ! -d "$AGENT/node_modules" ]; then
+  npm --prefix "$AGENT" ci --ignore-scripts
+fi
+if [ ! -f "$AGENT/dist/eagent.js" ] || [ -n "$(find "$AGENT/src" -newer "$AGENT/dist/eagent.js" -print -quit)" ]; then
+  npm --prefix "$AGENT" run build >/dev/null
+fi
+cd "$ROOT"
+exec node "$AGENT/dist/eagent.js" "$@"

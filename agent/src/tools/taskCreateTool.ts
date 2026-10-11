@@ -1,0 +1,102 @@
+/**
+ * TaskCreate — add a task to the persistent task graph.
+ *
+ * Returns the assigned id so the model can immediately reference the task
+ * in TaskUpdate calls (e.g. to set blockedBy on follow-up tasks).
+ *
+ * No hook event fires on task creation, and the UI always renders
+ * TaskList while task mode is on, so there is nothing to auto-expand.
+ */
+
+import { createTask } from "../state/taskStore.js";
+import { isTaskGraphEnabled, resolveTaskScope, validateTaskActor, withActiveTaskActor } from "./taskScope.js";
+import type { Tool, ToolContext, ToolResult } from "./Tool.js";
+
+const TOOL_NAME = "TaskCreate";
+
+function pickString(input: Record<string, unknown>, key: string): string | undefined {
+  const value = input[key];
+  return typeof value === "string" ? value : undefined;
+}
+
+export const taskCreateTool: Tool = {
+  name: TOOL_NAME,
+  searchHint: "create a task in the task list",
+  shouldDefer: true,
+
+  description:
+    "Create a structured task for the current session's persistent task graph. " +
+    "Tasks survive restarts and /clear, and support dependencies via blocks/blockedBy. " +
+    "Use proactively for 3+ step work, multi-step plans, and any task list the user would want to see across sessions.",
+
+  inputSchema: {
+    type: "object" as const,
+    properties: {
+      subject: {
+        type: "string",
+        minLength: 1,
+        description: "Imperative one-line title, e.g. 'Fix login bug'.",
+      },
+      description: {
+        type: "string",
+        minLength: 1,
+        description: "What needs to be done. One or two paragraphs is fine.",
+      },
+      activeForm: {
+        type: "string",
+        description:
+          "Present-continuous form shown in the spinner when the task is in_progress, e.g. 'Fixing login bug'. If omitted, the subject is used.",
+      },
+      metadata: {
+        type: "object",
+        additionalProperties: true,
+        description: "Free-form metadata attached to the task.",
+      },
+    },
+    required: ["subject", "description"],
+    additionalProperties: false,
+  },
+
+  async call(input: Record<string, unknown>, context: ToolContext): Promise<ToolResult> {
+    const actorError = await validateTaskActor(context);
+    if (actorError) return { content: `Error: ${actorError}`, isError: true };
+    const subject = pickString(input, "subject")?.trim();
+    const description = pickString(input, "description")?.trim();
+    const activeForm = pickString(input, "activeForm")?.trim();
+    const metadata =
+      input.metadata && typeof input.metadata === "object" && !Array.isArray(input.metadata)
+        ? (input.metadata as Record<string, unknown>)
+        : undefined;
+
+    if (!subject) return { content: "Error: `subject` must be a non-empty string.", isError: true };
+    if (!description) return { content: "Error: `description` must be a non-empty string.", isError: true };
+
+    const taskListId = resolveTaskScope(context).listId;
+    let id: string;
+    try {
+      id = await withActiveTaskActor(context, () =>
+        createTask(taskListId, {
+          subject,
+          description,
+          activeForm: activeForm || undefined,
+          status: "pending",
+          blocks: [],
+          blockedBy: [],
+          metadata,
+        }),
+      );
+    } catch (error) {
+      return { content: `Error: ${error instanceof Error ? error.message : String(error)}`, isError: true };
+    }
+
+    return { content: `Task #${id} created: ${subject}` };
+  },
+
+  isReadOnly() {
+    return false;
+  },
+
+  isEnabled() {
+    return isTaskGraphEnabled();
+  },
+};

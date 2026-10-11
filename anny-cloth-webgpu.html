@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+    <meta name="color-scheme" content="light" />
+    <title>NeuralClothSim 4D | Three.js WebGPU</title>
+    <link rel="stylesheet" href="./web/anny-cloth-webgpu.css" />
+    <script type="importmap">
+      {
+        "imports": {
+          "three": "./web/vendor/three.webgpu.js",
+          "three/webgpu": "./web/vendor/three.webgpu.js",
+          "three/addons/": "./web/vendor/jsm/"
+        }
+      }
+    </script>
+  </head>
+  <body>
+    <main id="app" aria-label="NeuralClothSim 4D WebGPU viewer">
+      <canvas id="viewport" aria-label="Anny child wearing simulated T-shirt and pleated skirt"></canvas>
+
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">NEURALCLOTHSIM 4D</p>
+          <h1>No-AMR physical mesh | fast cloth preview | WebGPU</h1>
+        </div>
+        <div id="backend" class="backend" data-testid="backend-status">Initializing GPU</div>
+      </header>
+
+      <section class="metrics" aria-label="Physics audit">
+        <div><span>Body gap</span><strong id="body-gap">--</strong></div>
+        <div><span>Metric recovery</span><strong id="metric-edges">--</strong></div>
+        <div><span>SE(3) steps</span><strong id="lie-steps">--</strong></div>
+      </section>
+
+      <div id="loading" class="loading" role="status">
+        <span></span>
+        Loading physical-time field
+      </div>
+
+      <footer class="transport" aria-label="Animation controls">
+        <button id="play" type="button" aria-label="Pause animation" title="Play or pause">II</button>
+        <label class="timeline">
+          <span>Physical phase</span>
+          <input id="scrubber" type="range" min="0" max="1" value="0" step="0.001" />
+        </label>
+        <output id="timecode">0.000 s</output>
+        <label class="speed">
+          <span>Speed</span>
+          <select id="speed">
+            <option value="0.5">0.5x</option>
+            <option value="1" selected>1x</option>
+            <option value="1.5">1.5x</option>
+            <option value="2">2x</option>
+          </select>
+        </label>
+      </footer>
+
+      <aside class="legend" aria-label="Scene legend">
+        <span><i class="skin"></i>Anny body</span>
+        <span><i class="shirt"></i>T-shirt</span>
+        <span><i class="skirt"></i>Pleated skirt</span>
+      </aside>
+
+      <div id="error" class="error" role="alert" hidden></div>
+    </main>
+    <script type="module" src="./web/anny-cloth-webgpu.js?v=no-amr-fast-v1"></script>
+  </body>
+</html>

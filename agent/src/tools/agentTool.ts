@@ -1,0 +1,741 @@
+/**
+ * Agent tool — the model's "delegate to a sub-agent" handle.
+ *
+ * Input fields: prompt, description, subagent_type, model,
+ * run_in_background, isolation, and the Agent Teams pair name /
+ * team_name.
+ *
+ * Flow (foreground):
+ *   1. Validate input + look up the AgentDefinition by name.
+ *   2. Resolve the model (explicit override → agent default → parent's).
+ *   3. Pull the parent's permission infrastructure off ToolContext (set
+ *      by QueryEngine on the per-submit enriched context).
+ *   4. Call runChildAgent — it runs an isolated agentic loop and returns
+ *      the sub-agent's final text plus stats.
+ *   5. Format the result so the parent model sees a structured summary.
+ *
+ * `run_in_background: true` hands the same work to runAsyncAgentLifecycle
+ * and returns immediately; `isolation: "worktree"` runs the sub-agent in a
+ * fresh git worktree.
+ *
+ * Plan-mode behavior: Agent declares `isReadOnly: true` (the actual
+ * permission decisions happen on the sub-agent's individual tool calls).
+ * However the permissions.ts plan-mode branch denies any
+ * tool not in PLAN_ALLOWED_TOOLS, so Agent cannot be spawned during
+ * planning anyway. This is intentional — sub-agents shouldn't run while
+ * the user is iterating on a plan they haven't approved.
+ */
+
+import { findAgent, getAllAgents } from "../agents/registry.js";
+import { randomUUID } from "node:crypto";
+import type { AgentIsolation, AgentRunResult } from "../agents/types.js";
+import type { Tool, ToolContext, ToolResult } from "./Tool.js";
+import { getDefaultModel } from "../services/api/client.js";
+import type {
+  PermissionDecision,
+  PermissionMode,
+  PermissionRequest,
+  PermissionRuleSet,
+  PermissionSettings,
+} from "../permissions/permissions.js";
+import {
+  completeSubAgentProgress,
+  startSubAgentProgress,
+  updateSubAgentProgress,
+} from "../state/subAgentProgressStore.js";
+import { registerAsyncAgent } from "../state/asyncAgentStore.js";
+import { ensureTaskOutputFile } from "../utils/taskOutput.js";
+import { createAgentWorktree, isInsideGitRepo, removeAgentWorktree, type WorktreeInfo } from "../utils/worktree.js";
+import { isAgentTeamsEnabled } from "../utils/agentTeamsEnabled.js";
+import { getActiveTeam } from "../state/teamContext.js";
+import { addTeamMember, formatAgentId, sanitizeName, TEAM_LEAD_NAME, type TeamMember } from "../utils/teamHelpers.js";
+
+// Short id helper. Crypto-grade uniqueness isn't needed —
+// agentIds are scoped to one CLI session and we use them as map keys.
+function generateAgentId(): string {
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+// agentTool MUST avoid statically importing anything in the
+// tools/* ↔ core/agenticLoop ↔ tools/* chain — otherwise the
+// `tools/index.ts → BUILTIN_TOOLS includes agentTool → runAgent →
+// agenticLoop → tools/index.ts` cycle hits a TDZ on `agentTool` itself
+// before index.ts can finish initializing the BUILTIN_TOOLS array.
+//
+// Both helpers below dynamically import their dependencies at call-time,
+// which breaks the cycle: by the time `agentTool.call()` runs, every
+// module on the chain has finished evaluating its top-level code.
+async function loadAllTools(): Promise<Tool[]> {
+  const { getAllTools } = await import("./index.js");
+  return getAllTools();
+}
+
+async function loadRunChildAgent(): Promise<typeof import("../agents/runAgent.js")["runChildAgent"]> {
+  const mod = await import("../agents/runAgent.js");
+  return mod.runChildAgent;
+}
+
+async function loadRunAsyncAgentLifecycle(): Promise<
+  typeof import("../agents/runAsyncAgent.js")["runAsyncAgentLifecycle"]
+> {
+  const mod = await import("../agents/runAsyncAgent.js");
+  return mod.runAsyncAgentLifecycle;
+}
+
+interface AgentInput {
+  prompt: string;
+  description?: string;
+  subagent_type?: string;
+  model?: string;
+  /** If true, return immediately and run the sub-agent in the background. */
+  run_in_background?: boolean;
+  /**
+   * Filesystem isolation level. Currently supports "worktree"
+   * (creates a fresh `git worktree`) or "none". Per-call value overrides
+   * the agent definition's `isolation` field.
+   */
+  isolation?: AgentIsolation;
+  /**
+   * Agent Teams. Short human-readable handle that other
+   * teammates use as the `to` value in SendMessage. Requires `team_name`
+   * to also be set and forces `run_in_background: true` (an unnamed
+   * synchronous Agent call would never be reachable by SendMessage
+   * anyway — the lead's loop is busy waiting for the return value).
+   */
+  name?: string;
+  /**
+   * Agent Teams. The team the new teammate joins. Must match
+   * the team currently active in this session (set by TeamCreate).
+   */
+  team_name?: string;
+}
+
+function readInput(raw: Record<string, unknown>): AgentInput {
+  const prompt = typeof raw["prompt"] === "string" ? raw["prompt"] : "";
+  const description = typeof raw["description"] === "string" ? raw["description"] : undefined;
+  const subagent_type = typeof raw["subagent_type"] === "string" ? raw["subagent_type"].trim() : undefined;
+  const model = typeof raw["model"] === "string" ? raw["model"].trim() : undefined;
+  const run_in_background = typeof raw["run_in_background"] === "boolean" ? raw["run_in_background"] : undefined;
+  const rawIsolation = raw["isolation"];
+  const isolation: AgentIsolation | undefined =
+    rawIsolation === "worktree" || rawIsolation === "none" ? rawIsolation : undefined;
+  const name = typeof raw["name"] === "string" ? raw["name"].trim() : undefined;
+  const team_name = typeof raw["team_name"] === "string" ? raw["team_name"].trim() : undefined;
+  return {
+    prompt,
+    description,
+    subagent_type,
+    model,
+    ...(run_in_background !== undefined ? { run_in_background } : {}),
+    ...(isolation !== undefined ? { isolation } : {}),
+    ...(name ? { name } : {}),
+    ...(team_name ? { team_name } : {}),
+  };
+}
+
+function formatResult(args: { agentType: string; description?: string; result: AgentRunResult }): string {
+  const { agentType, description, result } = args;
+  const headerLines = [
+    `Sub-agent '${agentType}' completed.`,
+    description ? `task: ${description}` : "",
+    `turns: ${result.turnCount} | tools used: ${result.totalToolUseCount} | duration: ${result.totalDurationMs}ms`,
+    `tokens: ${result.totalTokens} (input ${result.inputTokens}, output ${result.outputTokens})`,
+    result.reason !== "completed" ? `stop reason: ${result.reason}` : "",
+    result.warnings && result.warnings.length > 0
+      ? `warnings:\n${result.warnings.map((w) => `  - ${w}`).join("\n")}`
+      : "",
+  ].filter(Boolean);
+
+  return [headerLines.join("\n"), "", "<sub_agent_result>", result.finalText, "</sub_agent_result>"].join("\n");
+}
+
+export const agentTool: Tool = {
+  name: "Agent",
+  searchHint: "delegate work to a subagent",
+  description:
+    "Delegate a focused subtask to a specialized sub-agent. The sub-agent runs in its own context window with its own tool set, completes the task, and returns a concise summary. " +
+    "Use this when the subtask requires multiple tool calls (search, read many files, etc.) and you want to keep the main conversation context clean. " +
+    "Choose `subagent_type` based on the available sub-agent definitions listed in the system prompt's <system-reminder> block. Defaults to 'general-purpose' if omitted. " +
+    "The sub-agent does NOT see the main conversation history — write a self-contained `prompt`.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      prompt: {
+        type: "string",
+        description:
+          "Self-contained task description for the sub-agent. The sub-agent has no access to the main conversation, so include all the context it needs.",
+      },
+      description: {
+        type: "string",
+        description: "A short (3-5 word) name for the task, shown in the UI.",
+      },
+      subagent_type: {
+        type: "string",
+        description:
+          "Which sub-agent definition to use (e.g. 'general-purpose', 'Explore', or a custom name from .easy-agent/agents/). Defaults to 'general-purpose'.",
+      },
+      model: {
+        type: "string",
+        description:
+          "Optional model override for this sub-agent. If omitted, the agent definition's `model` is used; if that is also omitted, the parent's model is used.",
+      },
+      run_in_background: {
+        type: "boolean",
+        description:
+          "If true, the sub-agent runs in the background. The tool call returns immediately with `{ status: 'async_launched', agent_id, output_file }`. " +
+          "You will be automatically notified via a `<task-notification>` user message when the sub-agent finishes — do NOT sleep, poll, or proactively check on its progress. " +
+          "Use foreground (default) when you need the agent's results before you can proceed; use background only when you have independent work to do in parallel.",
+      },
+      isolation: {
+        type: "string",
+        enum: ["none", "worktree"],
+        description:
+          "Filesystem isolation level. 'worktree' runs the sub-agent inside a fresh `git worktree` so its file edits don't touch the main working copy until you review them. " +
+          "When omitted, falls back to the agent definition's `isolation` field, then to 'none'. " +
+          "Setting this explicitly OVERRIDES the agent definition — pass 'none' only when you have a strong reason to bypass an agent that was defined with worktree isolation. " +
+          "Worktree isolation requires the working directory to be inside a git repository; otherwise the sub-agent runs without isolation and a warning is returned alongside the result.",
+      },
+      name: {
+        type: "string",
+        description:
+          'Agent Teams only — register this sub-agent as a named teammate under the active team. The name becomes the address other members use in `SendMessage({ to: "<name>", ... })`. ' +
+          'Must be a short alphanumeric handle (e.g. "backend", "reviewer"). Requires `team_name` to also be set and forces `run_in_background: true` (a named teammate that runs in the foreground would never be reachable by a message). ' +
+          "Available only when the Agent Teams feature flag is on; omit otherwise.",
+      },
+      team_name: {
+        type: "string",
+        description:
+          "Agent Teams only — the team to which this named teammate belongs. Must match the currently active team (the one returned by your previous `TeamCreate` call). " +
+          "Required when `name` is set; ignored otherwise.",
+      },
+    },
+    required: ["prompt", "description"],
+    additionalProperties: false,
+  },
+
+  async call(input: Record<string, unknown>, context: ToolContext): Promise<ToolResult> {
+    const { prompt, description, subagent_type, model, run_in_background, isolation, name, team_name } =
+      readInput(input);
+
+    if (!prompt || !prompt.trim()) {
+      return {
+        content: "Error: 'prompt' is required and must be a non-empty string.",
+        isError: true,
+      };
+    }
+
+    const agentType = subagent_type || "general-purpose";
+    const def = findAgent(agentType);
+    if (!def) {
+      const available = getAllAgents()
+        .map((a) => a.agentType)
+        .join(", ");
+      return {
+        content: `Error: sub-agent type '${agentType}' is not registered. Available types: ${available || "(none)"}.`,
+        isError: true,
+      };
+    }
+
+    // ─── Validate team-mode invariants ──────────────────────────────
+    //
+    // Three failure modes we surface as errors rather than silently
+    // ignoring the name/team_name fields (silent ignore is the worst
+    // outcome — the model thinks it spawned a teammate but the actual
+    // SendMessage later finds no entry):
+    //
+    //   1. `name` set, feature flag off → teams feature isn't enabled.
+    //   2. `name` set without `team_name` (or vice-versa) → ambiguous.
+    //   3. `team_name` doesn't match the active team → wrong session.
+    //   4. Teammate trying to spawn another teammate (sub-team) → source
+    //      forbids this; we do too. Detect via context.teammateIdentity.
+    let teammateIdentity: { agentId: string; agentName: string; teamName: string; runId: string } | undefined;
+    if (name || team_name) {
+      if (!isAgentTeamsEnabled()) {
+        return {
+          content:
+            "Error: Agent Teams feature is not enabled. Drop `name` / `team_name`, or restart with --agent-teams (or set EASY_AGENT_TEAMS=1).",
+          isError: true,
+        };
+      }
+      if (!name || !team_name) {
+        return {
+          content:
+            "Error: `name` and `team_name` must both be set (or both omitted). A named teammate without a team has no inbox; a team_name without a name has no member to register.",
+          isError: true,
+        };
+      }
+      if (name === TEAM_LEAD_NAME) {
+        return {
+          content: `Error: "${TEAM_LEAD_NAME}" is reserved for the team lead — pick a different teammate name.`,
+          isError: true,
+        };
+      }
+      if (!/^[A-Za-z0-9_-]{1,64}$/.test(name)) {
+        return {
+          content: "Error: teammate name must contain 1-64 letters, digits, underscores or hyphens.",
+          isError: true,
+        };
+      }
+      const active = getActiveTeam();
+      if (!active) {
+        return {
+          content: "Error: no team is currently active. Call TeamCreate before spawning a named teammate.",
+          isError: true,
+        };
+      }
+      if (active.teamName !== team_name) {
+        return {
+          content: `Error: team_name "${team_name}" does not match the active team "${active.teamName}".`,
+          isError: true,
+        };
+      }
+      // Anti-recursion: a teammate cannot spawn a sub-teammate. Source
+      // strips the Agent tool from teammates entirely; we leave Agent
+      // visible (it's still useful for in-context delegation) but
+      // refuse the named-teammate variant.
+      if (
+        (
+          context as ToolContext & {
+            teammateIdentity?: { teamName: string };
+          }
+        ).teammateIdentity
+      ) {
+        return {
+          content:
+            "Error: teammates cannot spawn nested teammates. Use plain `Agent({ subagent_type, prompt })` for one-shot delegation, or ask the team lead to spawn a new teammate.",
+          isError: true,
+        };
+      }
+      if (run_in_background === false) {
+        return {
+          content:
+            "Error: named teammates must run in the background (`run_in_background: true`). A foreground teammate would block the lead's loop and be unreachable by SendMessage anyway.",
+          isError: true,
+        };
+      }
+      teammateIdentity = {
+        agentId: `${formatAgentId(name, sanitizeName(team_name))}-${randomUUID()}`,
+        agentName: name,
+        teamName: team_name,
+        runId: randomUUID(),
+      };
+    }
+
+    // Sub-agent's tool pool is filtered from the parent's full pool.
+    // resolveAgentTools (called inside runChildAgent) strips the Agent
+    // tool itself and applies the agent's allow/deny lists. Loaded
+    // lazily to avoid the tools/index.ts ↔ tools/agentTool.ts cycle.
+    const allTools = await loadAllTools();
+
+    // Model resolution (most specific wins):
+    //   1. Per-call override (input.model)
+    //   2. Agent definition's `model` field
+    //   3. Parent's active model (set by QueryEngine on the context)
+    //   4. the default model (ANTHROPIC_MODEL or the built-in fallback)
+    const { resolveRoleModel } = await import("../config/features.js");
+    const fallbackModel = context.defaultModel || getDefaultModel();
+    const resolvedModel =
+      model ||
+      def.model ||
+      (run_in_background || teammateIdentity
+        ? await resolveRoleModel(context.cwd, "background", fallbackModel)
+        : fallbackModel);
+
+    const permissionMode = context.getPermissionMode?.() as PermissionMode | undefined;
+    const permissionSettings = context.permissionSettings as PermissionSettings | undefined;
+    const sessionPermissionRules = context.sessionPermissionRules as PermissionRuleSet | undefined;
+    const onPermissionRequest = context.onPermissionRequest as
+      | ((request: PermissionRequest) => Promise<PermissionDecision>)
+      | undefined;
+
+    // Resolve isolation. Per-call > definition > "none".
+    //
+    // This precedence is intentional. The agent definition's `isolation` field acts as a DEFAULT, not a
+    // hard floor — the model can override per-call. Users who want a
+    // strict guarantee that "this agent always runs in a worktree"
+    // should rely on:
+    //   - the schema description (telling the model not to override
+    //     without a strong reason), and
+    //   - downstream review of the worktree path the tool result
+    //     surfaces (an empty `worktree:` line in the result is a
+    //     visible signal that isolation was skipped).
+    // A strict floor is deliberately not enforced: a definition's
+    // isolation is a default the model may override per call.
+    const effectiveIsolation: AgentIsolation = isolation ?? def.isolation ?? "none";
+
+    let worktreeInfo: WorktreeInfo | undefined;
+    let isolationWarning: string | undefined;
+    if (effectiveIsolation === "worktree") {
+      // Try to set up a worktree. If the cwd isn't a git repo, fall
+      // back to no isolation but warn and continue with cwd.
+      const inRepo = await isInsideGitRepo(context.cwd);
+      if (!inRepo) {
+        isolationWarning =
+          "Worktree isolation requested but the working directory is not inside a git repository. Falling back to no isolation.";
+      } else {
+        try {
+          // Slug the agent type so the dir/branch name is human-readable.
+          const slug = `agent-${agentType.toLowerCase().replaceAll(/[^a-z0-9-]/g, "-")}-${Date.now().toString(36)}`;
+          worktreeInfo = await createAgentWorktree(slug, context.cwd);
+        } catch (error) {
+          const msg = error instanceof Error ? error.message : String(error);
+          isolationWarning = `Failed to create worktree (${msg}). Falling back to no isolation.`;
+        }
+      }
+    }
+
+    // ─── Async (run_in_background) branch ───────────────────────────
+    //
+    // When the model asks for backgrounding, we:
+    //   1. Generate an agentId + ensure its .output JSONL file exists.
+    //   2. registerAsyncAgent — gets us an independent AbortController
+    //      and an entry in the in-memory store.
+    //   3. Fire `runAsyncAgentLifecycle(...)` without await — the parent
+    //      tool call returns IMMEDIATELY with `async_launched`.
+    //   4. The lifecycle wrapper handles transcript writing, worktree
+    //      cleanup, store completion, and notification enqueue.
+    //
+    // We never publish to subAgentProgressStore in the async path
+    // because that store is keyed to the parent's tool_use card which
+    // disappears as soon as we return. The async store + the
+    // <task-notification> at the next user submit are the proper
+    // surfaces for backgrounded progress.
+    // A named teammate ALWAYS goes through the background path. The
+    // schema's required `run_in_background: true` invariant is enforced
+    // above, but we OR the bool here as a belt-and-suspenders.
+    const isNamedTeammate = teammateIdentity !== undefined;
+    if (run_in_background === true || isNamedTeammate) {
+      // Use the teammate's deterministic agentId when present so the
+      // .output file matches the team-file member entry. Plain async
+      // sub-agents get a short random id (the stage-20 behavior).
+      const agentId = teammateIdentity ? teammateIdentity.agentId : generateAgentId();
+      const sessionIdForOutput = context.sessionId ?? "default";
+      const outputFile = await ensureTaskOutputFile(sessionIdForOutput, agentId);
+
+      // Register the teammate in the team file BEFORE
+      // launching, so SendMessage from anywhere (including this same
+      // model turn) can target them immediately.
+      if (teammateIdentity) {
+        const member: TeamMember = {
+          agentId: teammateIdentity.agentId,
+          name: teammateIdentity.agentName,
+          agentType,
+          ...(model ? { model } : {}),
+          joinedAt: Date.now(),
+          isActive: true,
+          status: "running",
+          runId: teammateIdentity.runId,
+          hostPid: process.pid,
+          heartbeatAt: Date.now(),
+          outputFile,
+          ...(worktreeInfo
+            ? {
+                worktreePath: worktreeInfo.worktreePath,
+                worktreeBranch: worktreeInfo.worktreeBranch,
+                gitRoot: worktreeInfo.gitRoot,
+              }
+            : {}),
+        };
+        try {
+          const added = await addTeamMember(teammateIdentity.teamName, member);
+          if (!added) throw new Error(`Team "${teammateIdentity.teamName}" no longer exists`);
+        } catch (error) {
+          if (worktreeInfo) await removeAgentWorktree(worktreeInfo);
+          return { content: `Error: ${error instanceof Error ? error.message : String(error)}`, isError: true };
+        }
+      }
+
+      const entry = registerAsyncAgent({
+        agentId,
+        agentType,
+        ...(teammateIdentity ? { teammateName: teammateIdentity.agentName } : {}),
+        ...(description ? { description } : {}),
+        prompt,
+        outputFile,
+        isolated: !!worktreeInfo,
+        ...(worktreeInfo ? { worktreePath: worktreeInfo.worktreePath } : {}),
+        ...(worktreeInfo ? { worktreeBranch: worktreeInfo.worktreeBranch } : {}),
+      });
+
+      // Headless permission policy for background sub-agents.
+      //
+      // Forward the parent's `onPermissionRequest` as usual (kept symmetric with the synchronous path), and rely on
+      // `shouldAvoidPermissionPrompts: true` (set inside
+      // runAsyncAgentLifecycle) to make the agentic loop short-circuit
+      // any "ask" decision into an auto-deny with a workaround message.
+      // Without this gating, a backgrounded sub-agent would:
+      //
+      //   1. compete with the foreground turn for the user's attention,
+      //      stalling any foreground prompt behind it;
+      //   2. surface a prompt with no agentId, so the user has no way
+      //      to know whose tool call they're approving;
+      //   3. freeze InputPrompt (`Boolean(state.permissionPrompt)` is
+      //      its disabled-flag), locking the user out of the main
+      //      conversation while they're doing unrelated work.
+      //
+      // The denial trail (and any blocked tool the model fell back on)
+      // is visible to the user in the .output JSONL and in the eventual
+      // <task-notification>.
+      const runAsyncLifecycle = await loadRunAsyncAgentLifecycle();
+      // fire-and-forget — never awaited; rejections are swallowed by
+      // the lifecycle's own try/catch.
+      void runAsyncLifecycle({
+        entry,
+        agentDefinition: def,
+        prompt,
+        ...(description ? { description } : {}),
+        availableTools: allTools,
+        model: resolvedModel,
+        parentToolContext: context,
+        ...(permissionMode ? { permissionMode } : {}),
+        ...(permissionSettings ? { permissionSettings } : {}),
+        ...(sessionPermissionRules ? { sessionPermissionRules } : {}),
+        ...(onPermissionRequest ? { onPermissionRequest } : {}),
+        ...(worktreeInfo ? { worktreeInfo } : {}),
+        ...(teammateIdentity ? { teammateIdentity } : {}),
+      });
+
+      // Tool-result text the model sees after launching a background
+      // sub-agent. Two copy choices are deliberate and should NOT drift:
+      //
+      //   1. The two follow-on options ("work on non-overlapping tasks"
+      //      vs "briefly tell the user and end your response") are
+      //      presented as equal alternatives joined by "or" — neither
+      //      capitalised, neither emphasised. An ALL-CAPS "END YOUR
+      //      RESPONSE" makes the model stop working entirely. Don't
+      //      bias it.
+      //
+      //   2. The output_file check is gated by "If asked" — meaning
+      //      the model is explicitly allowed to Read it when the user
+      //      requests an update, but should NOT do so preemptively
+      //      (which leads to a sleep+read polling loop).
+      const summary = [
+        teammateIdentity
+          ? `Teammate '${teammateIdentity.agentName}' joined team '${teammateIdentity.teamName}' (agent_type: ${agentType}).`
+          : `Async sub-agent '${agentType}' launched successfully.`,
+        `agent_id: ${agentId} (internal — do not mention to the user)`,
+        `output_file: ${outputFile}`,
+        teammateIdentity
+          ? `You can SendMessage to this teammate any time using { to: "${teammateIdentity.agentName}" }.`
+          : "",
+        worktreeInfo ? `worktree: ${worktreeInfo.worktreePath} (branch: ${worktreeInfo.worktreeBranch})` : "",
+        isolationWarning ? `warning: ${isolationWarning}` : "",
+        "",
+        "The agent is working in the background. You will be notified automatically via a `<task-notification>` user message when it completes.",
+        "do NOT sleep, poll, or proactively check on its progress.",
+        "Do not duplicate this agent's work — avoid working with the same files or topics it is using.",
+        "Work on non-overlapping tasks (which may include launching MORE background agents in parallel for genuinely independent subtasks), or briefly tell the user what you launched and end your response. Either is fine; pick whichever fits the conversation.",
+        "If the user explicitly asks for progress before completion, you may Read the output_file once or run `tail` on it.",
+        "Do NOT spawn a duplicate sub-agent for the same task while this one is running.",
+      ]
+        .filter(Boolean)
+        .join("\n");
+
+      return {
+        content: [
+          summary,
+          "",
+          "<async_launched>",
+          `  <agent_id>${agentId}</agent_id>`,
+          `  <agent_type>${agentType}</agent_type>`,
+          `  <output_file>${outputFile}</output_file>`,
+          worktreeInfo ? `  <worktree_path>${worktreeInfo.worktreePath}</worktree_path>` : "",
+          worktreeInfo ? `  <worktree_branch>${worktreeInfo.worktreeBranch}</worktree_branch>` : "",
+          "</async_launched>",
+        ]
+          .filter(Boolean)
+          .join("\n"),
+      };
+    }
+
+    // ─── Synchronous (foreground) branch ────────────────────────────
+
+    // The parent's tool_use id is our key into the sub-agent progress
+    // store. UI subscribes to that store and merges live updates into
+    // the matching ToolCallInfo. Without an id we can't correlate, so
+    // we silently fall back to "no progress UI" — the tool still works.
+    const progressKey = context.toolUseId;
+    if (progressKey) {
+      startSubAgentProgress(progressKey, {
+        agentType,
+        ...(teammateIdentity ? { teammateName: teammateIdentity.agentName } : {}),
+        ...(description ? { description } : {}),
+      });
+    }
+
+    // Map AgentProgressEvent (from the sub-agent's own loop) onto the
+    // store's update API. Tool count is tracked via tool_use_done (not
+    // _start) so only completed calls are counted — avoids an inflated mid-call number flickering on the UI.
+    const onProgress = progressKey
+      ? (event: import("../agents/runAgent.js").AgentProgressEvent): void => {
+          switch (event.type) {
+            case "tool_use_start":
+              // Optimistic update — show "running: <toolName>" the
+              // moment the model emits the call, even before it
+              // resolves. Count is incremented at done so it matches
+              // the final tool-use total.
+              updateSubAgentProgress(progressKey, {
+                lastToolName: event.toolName,
+                lastToolIsError: false,
+              });
+              break;
+            case "tool_use_done":
+              updateSubAgentProgress(progressKey, {
+                lastToolName: event.toolName,
+                lastToolIsError: event.isError === true,
+              });
+              break;
+            case "turn_usage": {
+              // Push the running token total to the store so the
+              // SubAgentCard can render "28.0k tokens" live. We surface
+              // the FULL accumulated cost — input + output + cache reads
+              // + cache creation — because that's what the user
+              // pays for.
+              const u = event.cumulativeUsage;
+              const totalTokens =
+                u.input_tokens +
+                u.output_tokens +
+                (u.cache_creation_input_tokens ?? 0) +
+                (u.cache_read_input_tokens ?? 0);
+              updateSubAgentProgress(progressKey, {
+                inputTokens: u.input_tokens,
+                outputTokens: u.output_tokens,
+                totalTokens,
+              });
+              break;
+            }
+            default:
+              break;
+          }
+        }
+      : undefined;
+
+    try {
+      const runChildAgent = await loadRunChildAgent();
+      const result = await runChildAgent({
+        agentDefinition: def,
+        prompt,
+        availableTools: allTools,
+        model: resolvedModel,
+        parentToolContext: context,
+        ...(permissionMode ? { permissionMode } : {}),
+        ...(permissionSettings ? { permissionSettings } : {}),
+        ...(sessionPermissionRules ? { sessionPermissionRules } : {}),
+        ...(onPermissionRequest ? { onPermissionRequest } : {}),
+        ...(context.abortSignal ? { abortSignal: context.abortSignal } : {}),
+        ...(onProgress ? { onProgress } : {}),
+        // Worktree-isolated runs override the cwd so every
+        // file tool resolves against the worktree path.
+        ...(worktreeInfo ? { cwdOverride: worktreeInfo.worktreePath } : {}),
+      });
+
+      // Post-run worktree cleanup. Same dirty-check as the
+      // async path — keep when there are uncommitted changes / new
+      // commits, remove when clean. The path is appended to the result
+      // payload so the model knows where the work landed.
+      let worktreeFinal: { worktreePath?: string; worktreeBranch?: string } = {};
+      if (worktreeInfo) {
+        const { hasWorktreeChanges, removeAgentWorktree } = await import("../utils/worktree.js");
+        let dirty = true;
+        try {
+          dirty = await hasWorktreeChanges(worktreeInfo.worktreePath, worktreeInfo.headCommit);
+        } catch {
+          dirty = true;
+        }
+        if (dirty) {
+          worktreeFinal = {
+            worktreePath: worktreeInfo.worktreePath,
+            worktreeBranch: worktreeInfo.worktreeBranch,
+          };
+        } else {
+          await removeAgentWorktree(worktreeInfo);
+        }
+      }
+
+      if (progressKey) {
+        completeSubAgentProgress(progressKey, {
+          reason: result.reason,
+          durationMs: result.totalDurationMs,
+          totalTokens: result.totalTokens,
+          inputTokens: result.inputTokens,
+          outputTokens: result.outputTokens,
+          toolUseCount: result.totalToolUseCount,
+        });
+      }
+
+      const formatted = formatResult({ agentType, description, result });
+      const extras: string[] = [];
+      if (isolationWarning) extras.push(`warning: ${isolationWarning}`);
+      if (worktreeFinal.worktreePath) {
+        extras.push(
+          `worktree: ${worktreeFinal.worktreePath} (branch: ${worktreeFinal.worktreeBranch}) — uncommitted changes preserved.`,
+        );
+      }
+      return {
+        content: extras.length > 0 ? `${formatted}\n\n${extras.join("\n")}` : formatted,
+      };
+    } catch (error: unknown) {
+      const msg = error instanceof Error ? error.message : String(error);
+
+      // Even on failure, run the same cleanup pass. If the
+      // sub-agent crashed mid-edit we want to keep the worktree.
+      if (worktreeInfo) {
+        const { hasWorktreeChanges, removeAgentWorktree } = await import("../utils/worktree.js");
+        let dirty = true;
+        try {
+          dirty = await hasWorktreeChanges(worktreeInfo.worktreePath, worktreeInfo.headCommit);
+        } catch {
+          dirty = true;
+        }
+        if (!dirty) {
+          await removeAgentWorktree(worktreeInfo);
+        }
+      }
+
+      if (progressKey) {
+        // model_error is the closest LoopTerminationReason for "the
+        // sub-agent threw" — runChildAgent itself didn't return because
+        // the agentic loop crashed. The store maps this (with isError
+        // also set) onto status: "error" for the UI.
+        completeSubAgentProgress(progressKey, {
+          reason: "model_error",
+          durationMs: 0,
+          totalTokens: 0,
+          inputTokens: 0,
+          outputTokens: 0,
+          toolUseCount: 0,
+          isError: true,
+        });
+      }
+      return {
+        content: `Error: sub-agent '${agentType}' failed to complete: ${msg}`,
+        isError: true,
+      };
+    }
+  },
+
+  isReadOnly(): boolean {
+    // The Agent tool itself has no side effects — its
+    // sub-agent's individual tool calls each go through their own
+    // permission checks. Plan-mode still rejects Agent because plan
+    // mode's allow-list only contains Read/Grep/Glob.
+    return true;
+  },
+
+  isEnabled(): boolean {
+    return true;
+  },
+
+  /**
+   * Each sub-agent runs in its own isolated context and the only shared
+   * state it touches — the parent's permission settings + session rules
+   * + the per-call entry in subAgentProgressStore — is keyed by the
+   * tool_use id, so two concurrent Agent invocations cannot collide.
+   * This is the change that lets the model fan out N independent
+   * sub-agents in a single assistant turn (e.g. "review code" + "audit
+   * security" in parallel) instead of waiting on each one in series.
+   */
+  isConcurrencySafe(): boolean {
+    return true;
+  },
+};

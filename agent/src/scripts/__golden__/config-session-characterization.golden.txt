@@ -1,0 +1,175 @@
+### configuration
+{
+  "order": [
+    "user",
+    "project",
+    "local",
+    "flag",
+    "policy"
+  ],
+  "resolved": {
+    "allow": [
+      "Read",
+      "Grep",
+      "Edit",
+      "Glob",
+      "Bash(git status)"
+    ],
+    "model": "flag-model",
+    "outputStyle": "local-style"
+  },
+  "sources": [
+    {
+      "raw": {
+        "allow": [
+          "Read",
+          "Grep"
+        ],
+        "model": "user-model",
+        "outputStyle": "user-style"
+      },
+      "source": "user"
+    },
+    {
+      "raw": {
+        "allow": [
+          "Edit",
+          "Read"
+        ],
+        "model": "project-model",
+        "outputStyle": "project-style"
+      },
+      "source": "project"
+    },
+    {
+      "raw": {
+        "allow": [
+          "Glob"
+        ],
+        "outputStyle": "local-style"
+      },
+      "source": "local"
+    },
+    {
+      "raw": {
+        "allow": [
+          "Bash(git status)"
+        ],
+        "model": "flag-model"
+      },
+      "source": "flag"
+    }
+  ]
+}
+
+### session
+{
+  "latest": "session-contract",
+  "paths": {
+    "latest": "<HOME>/.easy-agent/projects/<PROJECT>/latest",
+    "transcript": "<HOME>/.easy-agent/projects/<PROJECT>/session-contract.jsonl"
+  },
+  "restored": {
+    "fileHistorySnapshots": [
+      {
+        "messageId": "user-1",
+        "timestamp": "2026-01-02T03:04:09.000Z",
+        "trackedFileBackups": {
+          "src/example.ts": {
+            "backupFileName": "example.ts.v1",
+            "backupTime": "2026-01-02T03:04:09.000Z",
+            "version": 1
+          }
+        }
+      }
+    ],
+    "messages": [
+      {
+        "content": "Review this file.",
+        "role": "user"
+      },
+      {
+        "content": [
+          {
+            "text": "Done.",
+            "type": "text"
+          }
+        ],
+        "role": "assistant"
+      }
+    ],
+    "summary": {
+      "cwd": "<CWD>",
+      "firstPrompt": "Review this file.",
+      "messageCount": 2,
+      "model": "fixture-model",
+      "sessionId": "session-contract",
+      "startedAt": "2026-01-02T03:04:05.000Z",
+      "totalUsage": {
+        "input_tokens": 12,
+        "output_tokens": 3
+      },
+      "updatedAt": "2026-01-02T03:05:07.000Z"
+    }
+  },
+  "transcript": [
+    {
+      "cwd": "<CWD>",
+      "model": "fixture-model",
+      "sessionId": "session-contract",
+      "startedAt": "2026-01-02T03:04:05.000Z",
+      "type": "session_meta"
+    },
+    {
+      "message": {
+        "content": "Review this file.",
+        "role": "user"
+      },
+      "messageId": "user-1",
+      "role": "user",
+      "timestamp": "2026-01-02T03:04:10.000Z",
+      "type": "message"
+    },
+    {
+      "message": {
+        "content": [
+          {
+            "text": "Done.",
+            "type": "text"
+          }
+        ],
+        "role": "assistant"
+      },
+      "role": "assistant",
+      "timestamp": "2026-01-02T03:04:20.000Z",
+      "type": "message"
+    },
+    {
+      "timestamp": "2026-01-02T03:05:06.000Z",
+      "total": {
+        "input_tokens": 12,
+        "output_tokens": 3
+      },
+      "turn": {
+        "input_tokens": 12,
+        "output_tokens": 3
+      },
+      "type": "usage"
+    },
+    {
+      "snapshot": {
+        "messageId": "user-1",
+        "timestamp": "2026-01-02T03:04:09.000Z",
+        "trackedFileBackups": {
+          "src/example.ts": {
+            "backupFileName": "example.ts.v1",
+            "backupTime": "2026-01-02T03:04:09.000Z",
+            "version": 1
+          }
+        }
+      },
+      "timestamp": "2026-01-02T03:05:07.000Z",
+      "type": "file_history_snapshot"
+    }
+  ]
+}

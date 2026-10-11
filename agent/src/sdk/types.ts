@@ -1,0 +1,745 @@
+/**
+ * Public types of the Easy Agent session SDK.
+ *
+ * Everything a frontend sees — options, state snapshots, events, interaction
+ * requests and responses — is a plain JSON-serializable object, so the same
+ * shapes can cross a process boundary unchanged.
+ */
+
+import type { MessageParam } from "@anthropic-ai/sdk/resources/messages.js";
+import type { LoopTerminationReason } from "../core/agenticLoop.js";
+import type {
+  ContextBreakdown,
+  ContextCategory,
+  ContextCategoryId,
+  ContextItem,
+} from "../core/queryEngine/contextBreakdown.js";
+import type {
+  DiffViewData,
+  MemoryPickerItem,
+  PermissionsViewData,
+  PluginViewData,
+  ResumeSessionInfo,
+} from "../core/queryEngine/types.js";
+import type { SettingSource } from "../config/sources.js";
+import type { TokenWarningResult } from "../context/autoCompact.js";
+import type { PermissionMode } from "../permissions/permissions.js";
+import type { AsyncAgentEntry } from "../state/asyncAgentStore.js";
+export type { McpServerConfig } from "../types/mcp.js";
+import type { BashProgress } from "../state/bashProgressStore.js";
+import type { McpProgress } from "../state/mcpProgressStore.js";
+import type { SubAgentProgress } from "../state/subAgentProgressStore.js";
+import type { TaskMode } from "../state/taskModeStore.js";
+import type { ToolStatus } from "../state/toolStatusStore.js";
+import type { ToolResult, UserQuestion } from "../tools/Tool.js";
+import type { ModelProtocol } from "../services/api/providers/profile.js";
+import type { Usage } from "../types/message.js";
+import type { Task } from "../types/task.js";
+import type { TodoItem } from "../types/todo.js";
+import type { EffortLevel, ThinkingConfig } from "../utils/thinking.js";
+
+export type {
+  BashProgress,
+  ContextCategory,
+  ContextCategoryId,
+  ContextItem,
+  DiffViewData,
+  EffortLevel,
+  LoopTerminationReason,
+  McpProgress,
+  MemoryPickerItem,
+  MessageParam,
+  PermissionMode,
+  PermissionsViewData,
+  PluginViewData,
+  ResumeSessionInfo,
+  SubAgentProgress,
+  Task,
+  TaskMode,
+  ThinkingConfig,
+  TodoItem,
+  TokenWarningResult,
+  ToolStatus,
+  Usage,
+  UserQuestion,
+};
+
+/**
+ * Version of the event, state, and interaction shapes. Additive changes keep
+ * the number; removing a field or changing its meaning bumps it.
+ */
+export const SESSION_PROTOCOL_VERSION = 1;
+
+// ─── Runtime ──────────────────────────────────────────────────────────────
+
+/** Destination for startup warnings and bootstrap errors. */
+export interface RuntimeLogger {
+  warn(message: string): void;
+  error(message: string): void;
+}
+
+/** How MCP servers and plugin services are brought up. */
+export interface StartServicesOptions {
+  /** Connect the MCP servers configured in settings. Default true. */
+  mcpServers?: boolean;
+  /**
+   * Wait for plugin services before resolving. When false, MCP and plugin
+   * services start in the background and failures are reported as warnings.
+   * Default true.
+   */
+  wait?: boolean;
+}
+
+export interface AgentRuntimeOptions {
+  /** Absolute workspace directory. */
+  cwd: string;
+  /**
+   * `persisted` uses the saved workspace trust decision. `session` trusts the
+   * workspace for this process only, without saving the decision.
+   */
+  trust?: "persisted" | "session";
+  /**
+   * The command-line settings layer (`--settings` file contents plus inline
+   * flags such as model, mode, maxTurns, toolSearch). Installed for the whole
+   * process; omit it to keep the layer that is already installed.
+   */
+  flagSettings?: Record<string, unknown>;
+  /** Extra plugin directories to load from disk. */
+  pluginDirs?: readonly string[];
+  /** Tighten permissions of local data directories at startup. Default true. */
+  hardenPrivateData?: boolean;
+  /** Start MCP and plugin services during creation, or `false` to call `startServices()` later. */
+  services?: StartServicesOptions | false;
+  /** Where startup warnings go. Defaults to the console. */
+  logger?: RuntimeLogger;
+}
+
+/** One saved session of the workspace. */
+// ─── Settings ─────────────────────────────────────────────────────────────
+
+/** A settings file a frontend may write. */
+export type ConfigScope = "user" | "project" | "local";
+
+export interface ConfigSourceInfo {
+  source: SettingSource;
+  /** Absolute file path; null for command-line flags. */
+  path: string | null;
+  exists: boolean;
+  /** False for project and local files while the workspace is not trusted. */
+  applied: boolean;
+  /** Display-safe contents: inline secrets are `[redacted]`, `${VAR}` references stay. */
+  values: Record<string, unknown>;
+  parseError?: string;
+  validationErrors?: string[];
+}
+
+export interface EffectiveSetting {
+  /** Display-safe value. Lists merge across sources; `env`, `enabledPlugins`, `mcpServers`, `modelRoles` merge by key. */
+  value: unknown;
+  /** The settings layer that set the value last, or "default". */
+  source: SettingSource | "default";
+  /** Every source that contributed. */
+  sources: SettingSource[];
+  /** When a change takes effect: "next turn", "next request", "restart", … */
+  reload: string;
+}
+
+export interface ModelProfileInfo {
+  protocol: ModelProtocol;
+  model: string;
+  /** The base URL requests go to. */
+  baseURL: string;
+  /** The `apiKey` entry as shown: a `${VAR}` reference, `[redacted]`, or null when unset. */
+  apiKey: string | null;
+  /** Whether a key resolved, after `${VAR}` interpolation. */
+  hasApiKey: boolean;
+  /** Header names; values are not returned. */
+  headers: string[];
+  maxTokens?: number;
+  /** The settings layer that declared the profile. */
+  source: SettingSource;
+}
+
+export interface ConfigSnapshot {
+  workspaceTrusted: boolean;
+  /** Every source in priority order, low to high. */
+  sources: ConfigSourceInfo[];
+  effective: Record<string, EffectiveSetting>;
+  models: { profiles: Record<string, ModelProfileInfo>; defaultModel: string | null; warnings: string[] };
+  /** Keys a project or local file cannot set. */
+  userOnlyKeys: string[];
+}
+
+export interface ModelCheckResult {
+  ok: boolean;
+  protocol: ModelProtocol;
+  model: string;
+  latencyMs: number;
+  /** Why the request failed, with credentials taken out. */
+  error?: string;
+}
+
+export interface StoredSessionSummary {
+  sessionId: string;
+  cwd: string;
+  startedAt: string;
+  updatedAt: string;
+  model: string;
+  messageCount: number;
+  totalUsage: Usage;
+  /** First prompt the user typed; context the engine adds is skipped. */
+  firstPrompt: string;
+  /** Title set with `renameSession()`. */
+  title?: string;
+}
+
+/** A saved session read without opening it. */
+export interface StoredSession {
+  summary: StoredSessionSummary;
+  messages: MessageParam[];
+}
+
+/** Commands, skills, and agents the workspace offers. */
+export interface RuntimeCapabilities {
+  /** Built-in slash command names, sorted. */
+  builtinCommands: string[];
+  /** Skills a user can invoke as `/<name>`. */
+  skills: Array<{ name: string; description: string }>;
+  /** User-defined commands loaded from command directories. */
+  userCommands: Array<{ name: string; description: string }>;
+  /** Sub-agent types available to the Agent tool. */
+  agents: string[];
+  /** Active output style name. */
+  outputStyle: string;
+}
+
+// ─── Runtime inventory ────────────────────────────────────────────────────
+
+/** Where an item is configured: built in, a settings layer, or a plugin. */
+export type InventorySource = "built-in" | SettingSource | "plugin";
+
+/** A token count; `estimated` when it comes from character counts rather than the provider. */
+export interface TokenCount {
+  value: number;
+  estimated: boolean;
+}
+
+interface InventoryItemBase {
+  /** Unique within its list, e.g. `skill:project:review`. */
+  id: string;
+  name: string;
+  source: InventorySource;
+  /** Owning plugin, when `source` is `plugin`. */
+  pluginId?: string;
+  /** File the item is defined in. */
+  path?: string;
+  /** Takes part in sessions: listed to the model, connected, loaded, or run. */
+  enabled: boolean;
+  /** Why the item is off or limited, when that is not plain from the other fields. */
+  reason?: string;
+}
+
+export interface SkillInventoryItem extends InventoryItemBase {
+  kind: "skill";
+  description: string;
+  whenToUse?: string;
+  argumentHint?: string;
+  /** `model`: listed to the model; `manual`: only `/name`; `paths`: listed once a matching file is touched. */
+  invocation: "model" | "manual" | "paths";
+  paths?: string[];
+  /** For `paths` skills: a matching file was touched, so the skill is listed now. */
+  activated?: boolean;
+  allowedTools: string[];
+  /** Runs in a forked sub-agent context. */
+  fork: boolean;
+  /** Its line in the system prompt's skill list; zero when not listed. */
+  listing: TokenCount;
+  /** The skill body, loaded into the conversation when the skill runs. */
+  body: TokenCount;
+}
+
+export interface CommandInventoryItem extends InventoryItemBase {
+  kind: "command";
+  description: string;
+  argumentHint?: string;
+}
+
+export interface AgentInventoryItem extends InventoryItemBase {
+  kind: "agent";
+  description: string;
+  model?: string;
+  tools?: string[];
+  /** Its line in the system prompt's sub-agent list. */
+  listing: TokenCount;
+}
+
+export interface OutputStyleInventoryItem extends InventoryItemBase {
+  kind: "output_style";
+  description: string;
+  active: boolean;
+  /** Prompt text the style adds while active. */
+  prompt: TokenCount;
+}
+
+export type McpServerStatus =
+  | "connected"
+  | "pending"
+  | "failed"
+  | "disabled"
+  /** A `.mcp.json` server nobody approved or rejected yet. */
+  | "awaiting_approval"
+  /** A `.mcp.json` server listed in `disabledMcpjsonServers`. */
+  | "rejected"
+  /** In `.mcp.json` of an untrusted workspace. */
+  | "ignored";
+
+export interface McpToolInfo {
+  name: string;
+  description: string;
+  readOnly: boolean;
+  /** Offered by name only until ToolSearch loads it. */
+  deferred: boolean;
+  schema: TokenCount;
+}
+
+export interface McpServerInventoryItem extends InventoryItemBase {
+  kind: "mcp_server";
+  transport: "stdio" | "http" | "sse";
+  /** stdio command line, without environment values. */
+  command?: string;
+  url?: string;
+  status: McpServerStatus;
+  error?: string;
+  tools: McpToolInfo[];
+}
+
+export interface PluginInventoryItem extends InventoryItemBase {
+  kind: "plugin";
+  marketplace: string;
+  version: string;
+  description?: string;
+  author?: string;
+  /** Settings layer that enabled it. */
+  scope?: "user" | "project" | "local";
+  components: {
+    skills: string[];
+    commands: string[];
+    agents: string[];
+    outputStyles: string[];
+    hooks: string[];
+    mcpServers: string[];
+    lspServers: string[];
+  };
+  /** Ships hooks, MCP, or LSP servers. */
+  hasExecutableComponents: boolean;
+  /** False when enabled from a project or local file of an untrusted workspace: its executables do not run. */
+  executablesTrusted: boolean;
+  errors: string[];
+  warnings: string[];
+}
+
+export interface HookInventoryItem extends InventoryItemBase {
+  kind: "hook";
+  event: string;
+  matcher?: string;
+  command: string;
+  /** Seconds. */
+  timeout: number;
+  shell?: string;
+}
+
+export interface RuleInventoryItem extends InventoryItemBase {
+  kind: "rule";
+  /** `global`: user-wide AGENT.md; `ancestor`: a parent directory; `project`: the workspace; `memory`: the memory index. */
+  scope: "global" | "ancestor" | "project" | "memory";
+  /** Matched by `claudeMdExcludes`. */
+  excluded: boolean;
+  lines: number;
+  tokens: TokenCount;
+}
+
+export interface ToolInventoryItem extends InventoryItemBase {
+  kind: "tool";
+  description: string;
+  readOnly: boolean;
+  /** MCP server that provides the tool. */
+  mcpServer?: string;
+  /** Offered by name only until ToolSearch loads it, for the runtime's default model. */
+  deferred: boolean;
+  schema: TokenCount;
+}
+
+/** Everything the workspace runtime has loaded, with sources and state. */
+export interface RuntimeInventory {
+  workspaceTrusted: boolean;
+  /** Project configuration ignored because the workspace is not trusted. */
+  ignoredProjectConfig: string[];
+  skills: SkillInventoryItem[];
+  commands: CommandInventoryItem[];
+  agents: AgentInventoryItem[];
+  outputStyles: OutputStyleInventoryItem[];
+  mcpServers: McpServerInventoryItem[];
+  plugins: PluginInventoryItem[];
+  hooks: HookInventoryItem[];
+  rules: RuleInventoryItem[];
+  tools: ToolInventoryItem[];
+}
+
+export interface ReloadResult {
+  plugins: { enabled: number; disabled: number };
+  /** Registry sizes after the reload. */
+  skills: number;
+  commands: number;
+  agents: number;
+  outputStyles: number;
+  /** Plugin MCP servers started and stopped. */
+  mcpStarted: string[];
+  mcpStopped: string[];
+  errors: string[];
+}
+
+export interface McpApprovalResult {
+  name: string;
+  approved: boolean;
+  /** Settings file the decision went to. */
+  scope: ConfigScope;
+  /** Connection state afterwards; null when the server is not running. */
+  status: McpServerStatus | null;
+  error?: string;
+}
+
+export interface McpReconnectResult {
+  name: string;
+  status: McpServerStatus;
+  error?: string;
+  toolCount: number;
+}
+
+// ─── Session context ──────────────────────────────────────────────────────
+
+export type SessionContext = ContextBreakdown;
+
+// ─── Session options ──────────────────────────────────────────────────────
+
+export type InteractionKind = "permission" | "plan_approval" | "question";
+
+/**
+ * Automatic answers for interaction requests. A handler takes precedence over
+ * delivering the request to the frontend.
+ */
+export interface InteractionHandlers {
+  permission?: (request: PermissionInteraction) => PermissionResponse | Promise<PermissionResponse>;
+  plan_approval?: (request: PlanApprovalInteraction) => PlanApprovalResponse | Promise<PlanApprovalResponse>;
+  question?: (request: QuestionInteraction) => QuestionResponse | Promise<QuestionResponse>;
+}
+
+export interface AgentSessionOptions {
+  /** Model name or profile id. Defaults to the workspace model setting. */
+  model?: string;
+  /** Initial permission mode. Defaults to the `mode` setting. */
+  permissionMode?: PermissionMode;
+  /**
+   * Tool-turn limit used when neither `--max-turns` nor the `maxTurns` setting
+   * is set. Defaults to the agentic loop limit.
+   */
+  defaultMaxTurns?: number;
+  /**
+   * Request kinds the frontend answers through `respond()`. Kinds that are
+   * neither listed nor handled get the safe default: permission and plan
+   * approval are denied, questions are cancelled. Default: all kinds.
+   */
+  interactions?: readonly InteractionKind[];
+  handlers?: InteractionHandlers;
+  /**
+   * Start a turn automatically when the session is idle and a background
+   * agent result or team message arrives. Default true.
+   */
+  autoWake?: boolean;
+  /** Write the session transcript and file-history checkpoints. Default true. */
+  persist?: boolean;
+}
+
+// ─── Interactions ─────────────────────────────────────────────────────────
+
+interface InteractionBase {
+  /** Unique id; pass it to `respond()`. */
+  id: string;
+  /** Turn that raised the request. */
+  turnId: string | null;
+}
+
+interface ToolInteraction extends InteractionBase {
+  /** The tool call awaiting the decision; matches `tool_started.toolUseId`. */
+  toolUseId: string | null;
+}
+
+/** A tool call that needs the user's confirmation. */
+export interface PermissionInteraction extends ToolInteraction {
+  kind: "permission";
+  toolName: string;
+  input: Record<string, unknown>;
+  summary: string;
+  risk: string;
+  /** Rule that "allow always" would add for this session. */
+  ruleHint: string;
+}
+
+/** The model asks to leave plan mode with the plan below. */
+export interface PlanApprovalInteraction extends ToolInteraction {
+  kind: "plan_approval";
+  toolName: string;
+  input: Record<string, unknown>;
+  summary: string;
+  risk: string;
+  ruleHint: string;
+  planContent: string | null;
+  planFilePath: string;
+}
+
+/** AskUserQuestion: one or more multiple-choice questions. */
+export interface QuestionInteraction extends InteractionBase {
+  kind: "question";
+  questions: UserQuestion[];
+}
+
+export type InteractionRequest = PermissionInteraction | PlanApprovalInteraction | QuestionInteraction;
+
+export type PermissionResponse = { decision: "allow_once" } | { decision: "allow_always" } | { decision: "deny" };
+
+export type PlanApprovalResponse =
+  | {
+      decision: "approve";
+      /** Drop the planning conversation and start a fresh turn that implements the plan. */
+      clearContext?: boolean;
+      /**
+       * Allow Write, Edit, and npm/npx commands for the rest of the session.
+       * Defaults to true when `clearContext` is set, false otherwise.
+       */
+      acceptEdits?: boolean;
+    }
+  | {
+      decision: "reject";
+      /** When given, a follow-up turn asks the model to revise the plan. */
+      feedback?: string;
+    };
+
+export type QuestionResponse = { answers: Record<string, string> } | { cancelled: true };
+
+export type InteractionResponse = PermissionResponse | PlanApprovalResponse | QuestionResponse;
+
+/** Why a pending request stopped being pending. */
+export type InteractionResolution = "response" | "handler" | "interrupt" | "turn_end" | "closed";
+
+export type RespondOutcome = "resolved" | "stale";
+
+// ─── State ────────────────────────────────────────────────────────────────
+
+export interface ContextUsage {
+  /** Estimated tokens of the conversation in the context window. */
+  tokens: number;
+  window: number;
+  /** Rounded percentage of the window in use. */
+  percent: number;
+}
+
+export interface SessionUsage {
+  /** Cumulative usage of the session. */
+  total: Usage;
+  /** Usage of the most recent turn, null before the first turn completes. */
+  turn: Usage | null;
+  /** Usage of the most recent model request. */
+  lastCall: Usage | null;
+  context: ContextUsage | null;
+}
+
+/** A background agent as seen by frontends. */
+export type BackgroundAgentInfo = Omit<AsyncAgentEntry, "abortController" | "ownerScopeId">;
+
+export interface SessionState {
+  sessionId: string;
+  cwd: string;
+  /** A turn (model run or local command) is in progress. */
+  busy: boolean;
+  turnId: string | null;
+  model: string;
+  modelSource: "default" | "session";
+  permissionMode: PermissionMode;
+  taskMode: TaskMode;
+  /** Thinking configuration the next request will use. */
+  thinking: ThinkingConfig;
+  /** Reasoning effort override, null for the model default. */
+  effort: EffortLevel | null;
+  messages: MessageParam[];
+  usage: SessionUsage;
+  pendingRequests: InteractionRequest[];
+  todos: TodoItem[];
+  tasks: Task[];
+  backgroundAgents: BackgroundAgentInfo[];
+}
+
+// ─── Turns ────────────────────────────────────────────────────────────────
+
+/** An image sent with a turn. */
+export interface ImageInput {
+  /** Base64-encoded bytes. */
+  data: string;
+  /** `image/png`, `image/jpeg`, `image/gif`, or `image/webp`. */
+  mimeType: string;
+}
+
+export interface SendOptions {
+  /** Images the model sees with the input, after the text. */
+  images?: readonly ImageInput[];
+}
+
+/**
+ * What started a turn: user input, a background result that woke the idle
+ * session, or a follow-up the session runs after a plan decision.
+ */
+export type TurnSource = "user" | "background" | "plan_followup" | "feedback_followup";
+
+export type TurnContinuation = "plan_followup" | "feedback_followup";
+
+export interface TurnResult {
+  /** Null when the input was empty and nothing ran. */
+  turnId: string | null;
+  /** False when there was nothing to do. */
+  handled: boolean;
+  /** How the agentic loop stopped; absent for local commands. */
+  reason?: LoopTerminationReason;
+  /** Tool turns the agentic loop ran. */
+  toolTurns?: number;
+  /** Turns the session ran afterwards on its own (plan follow-ups). */
+  followUps: TurnResult[];
+}
+
+export type InterruptOutcome = "permission_denied" | "question_cancelled" | "turn_aborted" | "idle";
+
+/** Extended thinking for the session: adaptive or budgeted (`"on"`), off, or a token budget. */
+export type ThinkingSetting = "on" | "off" | number;
+
+export interface ShellResult {
+  output: string;
+  isError: boolean;
+}
+
+// ─── Events ───────────────────────────────────────────────────────────────
+
+export type ToolProgress =
+  | { kind: "status"; status: ToolStatus | null }
+  | { kind: "bash"; progress: BashProgress | null }
+  | { kind: "mcp"; progress: McpProgress | null }
+  | { kind: "subagent"; progress: SubAgentProgress | null };
+
+/** Structured result of a local command that opens a view. */
+export type CommandView =
+  | { type: "resume_picker"; sessions: ResumeSessionInfo[] }
+  | { type: "diff"; data: DiffViewData }
+  | { type: "memory_picker"; items: MemoryPickerItem[] }
+  | { type: "permissions"; data: PermissionsViewData }
+  | { type: "plugins"; data: PluginViewData };
+
+export type SessionEventBody =
+  // Session
+  | { type: "state_snapshot"; state: SessionState }
+  | { type: "messages_changed"; messages: MessageParam[] }
+  | { type: "usage_changed"; usage: SessionUsage }
+  | { type: "mode_changed"; mode: PermissionMode; previousMode: PermissionMode }
+  | { type: "model_changed"; model: string; source: "default" | "session" }
+  /** Extended thinking or reasoning effort changed, from `setThinking()`, `setEffort()`, `/think`, or `/effort`. */
+  | { type: "thinking_changed"; thinking: ThinkingConfig; effort: EffortLevel | null }
+  | { type: "task_mode_changed"; mode: TaskMode }
+  | { type: "todos_changed"; todos: TodoItem[] }
+  | { type: "tasks_changed"; tasks: Task[] }
+  | { type: "background_agents_changed"; agents: BackgroundAgentInfo[] }
+  | { type: "session_cleared" }
+  | { type: "session_replaced"; sessionId: string; messages: MessageParam[]; totalUsage: Usage }
+  | { type: "notice"; tone: "info" | "error"; title: string; body: string }
+  // Turns
+  | { type: "turn_started"; turnId: string; input: string; source: TurnSource; runsModel: boolean }
+  | {
+      type: "turn_completed";
+      turnId: string;
+      handled: boolean;
+      reason?: LoopTerminationReason;
+      toolTurns?: number;
+      continuation?: TurnContinuation;
+    }
+  | { type: "turn_failed"; turnId: string; error: { name: string; message: string } }
+  | { type: "text_delta"; text: string }
+  | { type: "thinking_started" }
+  | { type: "thinking_delta"; thinking: string }
+  | { type: "thinking_completed"; thinking: string; signature?: string }
+  | { type: "redacted_thinking"; data: string }
+  | { type: "assistant_message"; message: MessageParam }
+  | { type: "tool_started"; toolUseId: string; name: string; subAgentProgress?: SubAgentProgress }
+  | { type: "tool_progress"; toolUseId: string; progress: ToolProgress }
+  | { type: "tool_completed"; toolUseId: string; name: string; input: Record<string, unknown>; result: ToolResult }
+  | { type: "tool_results"; message: MessageParam }
+  | { type: "request_opened"; request: InteractionRequest }
+  | { type: "request_resolved"; requestId: string; kind: InteractionKind; resolution: InteractionResolution }
+  | { type: "api_retry"; attempt: number; maxRetries: number; delayMs: number; message: string }
+  | { type: "stream_restart"; reason: "max_tokens_escalation" | "reactive_compact" }
+  | { type: "token_warning"; warning: TokenWarningResult }
+  | { type: "compacted"; trigger: "auto" | "manual" | "micro"; summary?: string }
+  | { type: "error"; message: string }
+  // Local commands
+  | { type: "command_progress"; title: string; message: string; spinnerLabel: string }
+  | { type: "command_output"; kind: "info" | "error"; message: string }
+  | { type: "command_view"; view: CommandView }
+  | { type: "editor_requested"; filePath: string; label: string };
+
+/** Every event type, for consumers that validate or route events by type. */
+export const SESSION_EVENT_TYPES = [
+  "state_snapshot",
+  "messages_changed",
+  "usage_changed",
+  "mode_changed",
+  "model_changed",
+  "thinking_changed",
+  "task_mode_changed",
+  "todos_changed",
+  "tasks_changed",
+  "background_agents_changed",
+  "session_cleared",
+  "session_replaced",
+  "notice",
+  "turn_started",
+  "turn_completed",
+  "turn_failed",
+  "text_delta",
+  "thinking_started",
+  "thinking_delta",
+  "thinking_completed",
+  "redacted_thinking",
+  "assistant_message",
+  "tool_started",
+  "tool_progress",
+  "tool_completed",
+  "tool_results",
+  "request_opened",
+  "request_resolved",
+  "api_retry",
+  "stream_restart",
+  "token_warning",
+  "compacted",
+  "error",
+  "command_progress",
+  "command_output",
+  "command_view",
+  "editor_requested",
+] as const satisfies readonly SessionEventBody["type"][];
+
+// Fails to compile when an event type is missing from the list above.
+type MissingEventTypes = Exclude<SessionEventBody["type"], (typeof SESSION_EVENT_TYPES)[number]>;
+const _everyEventTypeListed: [MissingEventTypes] extends [never] ? true : MissingEventTypes = true;
+void _everyEventTypeListed;
+
+/** Every event carries the session id and a per-session sequence number. */
+export type SessionEvent = SessionEventBody & {
+  sessionId: string;
+  /** Increases by one per event; a snapshot carries the sequence it reflects. */
+  seq: number;
+};
+
+export type SessionEventListener = (event: SessionEvent) => void;

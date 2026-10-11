@@ -1,0 +1,4 @@
+{
+  "enabledMcpjsonServers": ["fashion"],
+  "allow": ["mcp__fashion__*"]
+}

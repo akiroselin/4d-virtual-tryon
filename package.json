@@ -1,0 +1,12 @@
+{
+  "name": "4d-virtual-tryon-web",
+  "private": true,
+  "description": "Web tooling for the Three.js WebGPU outfit viewer (frame capture).",
+  "type": "module",
+  "scripts": {
+    "capture": "node scripts/capture_webgpu.mjs"
+  },
+  "devDependencies": {
+    "playwright-core": "1.56.1"
+  }
+}

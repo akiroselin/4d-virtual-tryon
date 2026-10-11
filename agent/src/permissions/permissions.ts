@@ -1,0 +1,720 @@
+import * as path from "node:path";
+import type { MessageParam } from "@anthropic-ai/sdk/resources/messages.js";
+import type { Tool } from "../tools/Tool.js";
+import { analyzeBashCommand, type BashReadOnlyAnalysis } from "../tools/bashReadOnlyAnalysis.js";
+import { getPlanFilePath } from "../context/plans.js";
+import { loadSettingSources, isTrustedScopeForSensitiveKeys } from "../config/sources.js";
+import { isProjectTrusted } from "../config/globalState.js";
+import { loadSandboxSettings, shouldUseSandbox, splitCommand } from "../sandbox/index.js";
+import { classifyAutoModeAction } from "./autoClassifier.js";
+import { stripDangerousAllowRules } from "./dangerousPatterns.js";
+import { isPreapprovedUrl } from "../tools/webFetch/preapproved.js";
+import {
+  recordClassifierDenial,
+  recordClassifierSuccess,
+  recordClassifierFailure,
+  shouldFallbackToPrompting,
+  isAutoModeCircuitBroken,
+  notifyCircuitBreakOnce,
+} from "./autoModeState.js";
+
+export type PermissionBehavior = "allow" | "ask" | "deny";
+export type PermissionMode = "default" | "plan" | "auto";
+export type PermissionDecision = "allow_once" | "allow_always" | "deny" | "allow_clear_context" | "allow_accept_edits";
+
+export interface PermissionRuleSet {
+  allow: string[];
+  deny: string[];
+}
+
+export interface PermissionSettings extends PermissionRuleSet {
+  mode: PermissionMode;
+}
+
+export interface PermissionRequest {
+  toolName: string;
+  input: Record<string, unknown>;
+  summary: string;
+  risk: string;
+  ruleHint: string;
+  /** The tool call awaiting the decision, when the request comes from the agentic loop. */
+  toolUseId?: string;
+}
+
+export interface PermissionResponse {
+  behavior: PermissionBehavior;
+  reason: string;
+  request: PermissionRequest;
+}
+
+export interface PermissionCheckParams {
+  tool: Tool;
+  input: Record<string, unknown>;
+  cwd: string;
+  mode?: PermissionMode;
+  sessionRules?: PermissionRuleSet;
+  settings?: PermissionSettings;
+  /**
+   * Conversation transcript before the proposed action. Threaded through so
+   * the Auto Mode AI classifier can infer user intent. Optional; the
+   * rule engine ignores it and only the auto-mode branch reads it.
+   */
+  messages?: MessageParam[];
+  /**
+   * Active model handle. Threaded through so the Auto Mode AI classifier uses
+   * the user's selected profile instead of defaulting to an Anthropic model
+   * (which would fail auth for non-Anthropic-only setups).
+   */
+  model?: string;
+}
+
+interface RawSettings {
+  allow?: unknown;
+  deny?: unknown;
+  mode?: unknown;
+  autoMode?: unknown;
+}
+
+const DEFAULT_PERMISSION_SETTINGS: PermissionSettings = {
+  allow: [],
+  deny: [],
+  mode: "default",
+};
+
+// Read-only tools that are safe to use while planning: the local inspection
+// trio plus the read-only web/MCP tools (WebSearch and the MCP resource
+// readers). WebFetch is intentionally NOT here — it is gated
+// per-domain by resolveWebFetchDecision, which runs before this branch.
+const PLAN_ALLOWED_TOOLS = new Set(["Read", "Grep", "Glob", "WebSearch", "ListMcpResources", "ReadMcpResource"]);
+
+// Coordination-only tools — their side effects are confined to Easy Agent's
+// own ~/.easy-agent state directory (planning state, team file + mailbox) and
+// never touch the user's workspace. Auto-approved in every mode, including
+// Auto Mode (they never reach the classifier).
+const COORDINATION_TOOLS = new Set([
+  "TodoWrite",
+  "TaskCreate",
+  "TaskUpdate",
+  "TaskGet",
+  "TaskList",
+  "TeamCreate",
+  "TeamDelete",
+  "SendMessage",
+]);
+
+function isCoordinationTool(toolName: string): boolean {
+  return COORDINATION_TOOLS.has(toolName);
+}
+
+// Auto Mode hard-deny blacklist — commands that are NEVER safe to auto-run.
+// These are blocked outright without spending a classifier call (and serve as
+// a safety floor even if the classifier would have erred). Narrower than
+// `DANGEROUS_BASH_PREFIXES` (which only triggers "ask" in default mode):
+// commands like `git push` / `mv` / `chmod` are NOT hard-denied — they go to
+// the classifier, which weighs them against user intent.
+const AUTO_HARD_DENY_BASH_PATTERNS: RegExp[] = [
+  /\brm\s+(-[a-z]*r[a-z]*f|-[a-z]*f[a-z]*r)\b/i, // rm -rf / rm -fr (recursive force)
+  /\b(curl|wget|fetch)\b[^|]*\|\s*(sudo\s+)?(bash|sh|zsh|python[0-9.]*|node|perl|ruby)\b/i, // pipe remote → shell
+  /\bsudo\b/i, // privilege escalation
+  /\bsu\s+-?\b/i,
+  /\bdd\b[^|]*\bof=\/dev\//i, // overwrite a block device
+  /\bmkfs(\.\w+)?\b/i, // format a filesystem
+  /\bfdisk\b/i,
+  />\s*\/dev\/(sd|disk|nvme|hd)/i, // redirect into a raw disk
+  /:\(\)\s*\{\s*:\s*\|\s*:&\s*\}\s*;\s*:/, // fork bomb
+];
+
+function isHardDeniedBashCommand(command: string): boolean {
+  const normalized = command.replace(/\s+/g, " ").trim();
+  if (!normalized) return false;
+  return AUTO_HARD_DENY_BASH_PATTERNS.some((re) => re.test(normalized));
+}
+
+const DANGEROUS_BASH_PREFIXES = [
+  "rm ",
+  "sudo ",
+  "chmod ",
+  "chown ",
+  "mv ",
+  "dd ",
+  "mkfs",
+  "shutdown",
+  "reboot",
+  "init 0",
+  "init 6",
+  "git push",
+  "git reset --hard",
+  "git clean -fd",
+];
+
+function normalizeRuleList(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .filter((item): item is string => typeof item === "string")
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function normalizeMode(value: unknown): PermissionMode | undefined {
+  return value === "default" || value === "plan" || value === "auto" ? value : undefined;
+}
+
+/**
+ * Resolve permission settings by merging every settings source.
+ *
+ *   - `allow` / `deny`  → concatenated across all sources then de-duplicated
+ *     (defaults first, so they always apply). De-duplication keeps the list
+ *     small without changing matching behavior.
+ *   - `mode`            → SECURITY-SENSITIVE. `auto` mode disables every
+ *     confirmation prompt, so it must NOT be settable from a committed/checked
+ *     in project (or local) settings file — otherwise a hostile repo could
+ *     ship `{"mode":"auto"}` and silently bypass all permission checks. We
+ *     therefore read `mode` only from non-project/local sources (user / flag /
+ *     policy), later source winning.
+ *
+ * A malformed settings file degrades to "ignored" rather than throwing:
+ * dropping a source can only REMOVE allow rules (fail-closed → more prompts,
+ * never fewer), so it is safe. The malformed file is reported separately via
+ * `loadSettingsDiagnostics` so the user still sees a notice.
+ */
+export async function loadPermissionSettings(cwd: string): Promise<PermissionSettings> {
+  const sources = await loadSettingSources(cwd);
+  const workspaceTrusted = await isProjectTrusted(cwd);
+
+  const allow: string[] = [...DEFAULT_PERMISSION_SETTINGS.allow];
+  const deny: string[] = [...DEFAULT_PERMISSION_SETTINGS.deny];
+  let mode: PermissionMode | undefined;
+
+  for (const src of sources) {
+    if (!src.raw) continue;
+    const raw = src.raw as RawSettings;
+    const projectScoped = src.source === "project" || src.source === "local";
+    if (!projectScoped || workspaceTrusted) allow.push(...normalizeRuleList(raw.allow));
+    deny.push(...normalizeRuleList(raw.deny));
+    if (!isTrustedScopeForSensitiveKeys(src.source)) continue;
+    // Explicit `mode` wins within a source; `autoMode: true` is a convenience
+    // alias for `mode: "auto"`. Later trusted source wins overall.
+    const m = normalizeMode(raw.mode) ?? (raw.autoMode === true ? "auto" : undefined);
+    if (m) mode = m;
+  }
+
+  return {
+    allow: dedupe(allow),
+    deny: dedupe(deny),
+    mode: mode ?? DEFAULT_PERMISSION_SETTINGS.mode,
+  };
+}
+
+function dedupe(list: string[]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const item of list) {
+    if (seen.has(item)) continue;
+    seen.add(item);
+    out.push(item);
+  }
+  return out;
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function wildcardToRegExp(pattern: string): RegExp {
+  const source = pattern.split("*").map(escapeRegExp).join(".*");
+  return new RegExp(`^${source}$`, "i");
+}
+
+function extractBashCommand(input: Record<string, unknown>): string {
+  return typeof input.command === "string" ? input.command.trim() : "";
+}
+
+function extractSkillName(input: Record<string, unknown>): string {
+  return typeof input.skill === "string" ? input.skill.trim() : "";
+}
+
+/** Extract the hostname from a WebFetch tool input's `url` field. */
+function extractUrlHost(input: Record<string, unknown>): string {
+  if (typeof input.url !== "string") return "";
+  try {
+    return new URL(input.url).hostname;
+  } catch {
+    return "";
+  }
+}
+
+export function matchesPermissionRule(rule: string, toolName: string, input: Record<string, unknown>): boolean {
+  const normalizedRule = rule.trim();
+  if (!normalizedRule) return false;
+  if (normalizedRule === toolName) return true;
+
+  // Wildcard match for MCP tool names: `mcp__github__*` matches every tool
+  // exposed by the github MCP server. Source code uses fully qualified
+  // `mcp__server__tool` names for permission rule matching to avoid
+  // collisions with builtin tool names — we follow the same convention
+  // and additionally support a trailing `*` for whole-server allow/deny.
+  if (normalizedRule.startsWith("mcp__") && normalizedRule.includes("*")) {
+    return wildcardToRegExp(normalizedRule).test(toolName);
+  }
+
+  const match = normalizedRule.match(/^([A-Za-z]+)\((.*)\)$/);
+  if (!match) return false;
+
+  const [, ruleToolName, pattern] = match;
+  if (ruleToolName !== toolName) return false;
+
+  if (toolName === "Bash") {
+    const command = extractBashCommand(input);
+    return wildcardToRegExp(pattern.trim()).test(command);
+  }
+
+  // WebFetch rules: `WebFetch(domain:example.com)` matches that host and any
+  // subdomain. A bare
+  // `WebFetch(example.com)` form is also accepted for convenience.
+  if (toolName === "WebFetch") {
+    const host = extractUrlHost(input);
+    if (!host) return false;
+    const trimmed = pattern.trim();
+    const domain = trimmed.startsWith("domain:") ? trimmed.slice("domain:".length).trim() : trimmed;
+    if (!domain) return false;
+    if (domain.includes("*")) return wildcardToRegExp(domain).test(host);
+    return host === domain || host.endsWith(`.${domain}`);
+  }
+
+  // Skill rules: `Skill(my-skill)` exact, `Skill(review:*)` prefix-glob.
+  // The argument is the skill `name` (NOT the dirname or any args).
+  if (toolName === "Skill") {
+    const skillName = extractSkillName(input);
+    if (!skillName) return false;
+    const trimmedPattern = pattern.trim();
+    if (trimmedPattern.includes("*")) {
+      return wildcardToRegExp(trimmedPattern).test(skillName);
+    }
+    return trimmedPattern === skillName;
+  }
+
+  return false;
+}
+
+function matchesAnyRule(rules: string[], toolName: string, input: Record<string, unknown>): boolean {
+  return rules.some((rule) => matchesPermissionRule(rule, toolName, input));
+}
+
+function findFirstMatchingRule(rules: string[], toolName: string, input: Record<string, unknown>): string | undefined {
+  return rules.find((rule) => matchesPermissionRule(rule, toolName, input));
+}
+
+/**
+ * Sandbox auto-allow path.
+ *
+ * Pre-condition: caller has confirmed the command WILL be sandboxed
+ * (sandbox.enabled + autoAllowBashIfSandboxed + shouldUseSandbox).
+ *
+ * Decision tree:
+ *   1. Any subcommand hits a Bash deny rule → deny (security boundary)
+ *   2. Full command or any subcommand hits a Bash ask rule → ask
+ *   3. Otherwise → allow (sandbox is the safety net)
+ *
+ * The per-subcommand deny check is the SECURITY-critical part: a
+ * compound command like `echo hi && rm -rf /` would not match
+ * `Bash(rm:*)` against the full command string. We must split first.
+ */
+function checkSandboxAutoAllow(
+  command: string,
+  rules: { allow: string[]; deny: string[] },
+  sessionRules: { allow: string[]; deny: string[] },
+): { behavior: PermissionBehavior; reason: string } {
+  const allDenyRules = [...sessionRules.deny, ...rules.deny];
+  const allAllowRules = [...sessionRules.allow, ...rules.allow];
+
+  let subcommands: string[];
+  try {
+    subcommands = splitCommand(command);
+  } catch {
+    subcommands = [command];
+  }
+  if (subcommands.length === 0) subcommands = [command];
+
+  // Pass 1: deny on any subcommand wins.
+  for (const sub of subcommands) {
+    const denyRule = findFirstMatchingRule(allDenyRules, "Bash", { command: sub });
+    if (denyRule) {
+      return { behavior: "deny", reason: `subcommand "${sub}" matched deny rule "${denyRule}"` };
+    }
+  }
+  // Also check full-command deny (covers wildcard rules like `Bash(*evil*)`
+  // that match the full string but no individual subcommand).
+  const fullDeny = findFirstMatchingRule(allDenyRules, "Bash", { command });
+  if (fullDeny) {
+    return { behavior: "deny", reason: `command matched deny rule "${fullDeny}"` };
+  }
+
+  // Pass 2: ask on any subcommand or full command.
+  for (const sub of subcommands) {
+    const askRule = findFirstMatchingRule(allAllowRules, "Bash", { command: sub });
+    if (askRule === undefined) continue;
+    // A matching allow rule short-circuits to allow if sandboxed; we
+    // continue scanning for ask-style rules separately. Easy-agent
+    // doesn't have a separate ask-list (only allow/deny), so we treat
+    // an allow match as "explicit allow" — return early.
+    return { behavior: "allow", reason: `subcommand "${sub}" matched allow rule "${askRule}"` };
+  }
+
+  return {
+    behavior: "allow",
+    reason: "auto-allowed inside sandbox (autoAllowBashIfSandboxed)",
+  };
+}
+
+function isDangerousBashCommand(command: string): boolean {
+  const normalized = command.replace(/\s+/g, " ").trim().toLowerCase();
+  if (!normalized) return false;
+  return DANGEROUS_BASH_PREFIXES.some((prefix) => normalized.startsWith(prefix));
+}
+
+function summarizeInput(input: Record<string, unknown>): string {
+  const entries = Object.entries(input)
+    .filter(([, value]) => value !== undefined)
+    .slice(0, 3)
+    .map(([key, value]) => {
+      const text = typeof value === "string" ? value : JSON.stringify(value);
+      const compact = (text ?? "").replace(/\s+/g, " ").trim();
+      return `${key}=${compact.length > 80 ? `${compact.slice(0, 77)}...` : compact}`;
+    });
+
+  return entries.length > 0 ? entries.join(", ") : "No arguments";
+}
+
+export function summarizePermissionRequest(toolName: string, input: Record<string, unknown>): string {
+  if (toolName === "Bash") {
+    const command = extractBashCommand(input);
+    return command ? `command=${command}` : "command=<empty>";
+  }
+  if (toolName === "WebFetch") {
+    return typeof input.url === "string" ? `url=${input.url}` : "url=<empty>";
+  }
+  return summarizeInput(input);
+}
+
+export function buildPermissionRuleHint(toolName: string, input: Record<string, unknown>): string {
+  if (toolName === "Bash") {
+    const command = extractBashCommand(input);
+    const firstToken = command.split(/\s+/)[0];
+    return firstToken ? `Bash(${firstToken} *)` : "Bash";
+  }
+  if (toolName === "Skill") {
+    const skillName = extractSkillName(input);
+    return skillName ? `Skill(${skillName})` : "Skill";
+  }
+  if (toolName === "WebFetch") {
+    const host = extractUrlHost(input);
+    return host ? `WebFetch(domain:${host})` : "WebFetch";
+  }
+  return toolName;
+}
+
+function getRiskLabel(tool: Tool, input: Record<string, unknown>, bashAnalysis?: BashReadOnlyAnalysis): string {
+  if (tool.name === "Bash") {
+    const command = extractBashCommand(input);
+    if (isDangerousBashCommand(command)) {
+      return "High risk: destructive shell command detected";
+    }
+    if (bashAnalysis?.isReadOnly) {
+      return "Low risk: read-only shell command";
+    }
+    return "Medium risk: shell command may change files or git state";
+  }
+
+  if (tool.isReadOnly()) {
+    return "Low risk: read-only tool";
+  }
+
+  if (tool.name === "Write" || tool.name === "Edit" || tool.name === "MultiEdit") {
+    return "Medium risk: writes files in the workspace";
+  }
+
+  return "Medium risk: operation may change local state";
+}
+
+/**
+ * Auto Mode decision pipeline. Reached only when `mode === "auto"`.
+ *
+ * Order is deliberate and security-first:
+ *   1. Coordination-only tools        → allow (never classified)
+ *   2. EnterPlanMode                   → ask  (a mode switch is a conscious choice)
+ *   3. Explicit deny rules             → deny (always win, before any allow)
+ *   4. Bash hard-deny blacklist        → deny (never-safe; saves a classifier call)
+ *   5. Read-only fast-path             → allow (saves a classifier call)
+ *   6. Explicit allow rules            → allow
+ *   7. AI classifier                   → allow / (block → deny) / (unavailable → ask)
+ *
+ * The classifier never auto-allows on uncertainty: an unavailable verdict
+ * falls back to the normal confirmation UI and feeds the failure circuit
+ * breaker. Consecutive blocks are tracked as well; once the threshold is
+ * reached, further blocks degrade to `ask` so the human decides instead.
+ */
+async function resolveAutoModeDecision(
+  params: PermissionCheckParams,
+  request: PermissionRequest,
+  settings: PermissionSettings,
+  sessionRules: PermissionRuleSet,
+  bashAnalysis?: BashReadOnlyAnalysis,
+): Promise<PermissionResponse> {
+  if (isCoordinationTool(params.tool.name)) {
+    return { behavior: "allow", reason: `${params.tool.name} writes coordination-only state`, request };
+  }
+
+  if (params.tool.name === "EnterPlanMode") {
+    return { behavior: "ask", reason: "entering plan mode requires confirmation", request };
+  }
+
+  if (
+    matchesAnyRule(sessionRules.deny, params.tool.name, params.input) ||
+    matchesAnyRule(settings.deny, params.tool.name, params.input)
+  ) {
+    return { behavior: "deny", reason: "matched deny rule", request };
+  }
+
+  if (params.tool.name === "Bash") {
+    const command = extractBashCommand(params.input);
+    if (isHardDeniedBashCommand(command)) {
+      return { behavior: "deny", reason: "high-risk shell command blocked in auto mode", request };
+    }
+    if (bashAnalysis?.isReadOnly) {
+      return { behavior: "allow", reason: "read-only shell command", request };
+    }
+  } else if (params.tool.isReadOnly()) {
+    return { behavior: "allow", reason: "read-only tool", request };
+  }
+
+  // Honor explicit allow rules — but NOT dangerous ones (interpreters, bare
+  // Bash, Agent), which would let the agent bypass the classifier. Those are
+  // stripped here so the action falls through to the classifier instead.
+  const safeSessionAllow = stripDangerousAllowRules(sessionRules.allow);
+  const safeSettingsAllow = stripDangerousAllowRules(settings.allow);
+  if (
+    matchesAnyRule(safeSessionAllow, params.tool.name, params.input) ||
+    matchesAnyRule(safeSettingsAllow, params.tool.name, params.input)
+  ) {
+    return { behavior: "allow", reason: "matched allow rule", request };
+  }
+
+  const verdict = await classifyAutoModeAction({
+    messages: params.messages ?? [],
+    toolName: params.tool.name,
+    toolInput: params.input,
+    allowRules: [...safeSessionAllow, ...safeSettingsAllow],
+    denyRules: [...sessionRules.deny, ...settings.deny],
+    model: params.model,
+  });
+
+  // Classifier unavailable (API/parse failure): never auto-allow on
+  // uncertainty. Degrade to manual confirmation and feed the circuit breaker
+  // — enough consecutive failures disables the classifier for the session.
+  if (verdict.unavailable) {
+    recordClassifierFailure();
+    return {
+      behavior: "ask",
+      reason: `classifier unavailable — manual review (${verdict.reason})`,
+      request,
+    };
+  }
+
+  if (verdict.shouldBlock) {
+    recordClassifierDenial();
+    // After enough consecutive blocks, stop silently denying and let the
+    // human decide instead (the classifier reason is surfaced in the prompt).
+    if (shouldFallbackToPrompting()) {
+      return {
+        behavior: "ask",
+        reason: `classifier blocked repeatedly — please review: ${verdict.reason}`,
+        request,
+      };
+    }
+    return { behavior: "deny", reason: verdict.reason, request };
+  }
+
+  recordClassifierSuccess();
+  return { behavior: "allow", reason: `auto-approved: ${verdict.reason}`, request };
+}
+
+/**
+ * WebFetch domain-permission pipeline. Runs in EVERY mode (default / plan /
+ * auto) and BEFORE the generic read-only fast-path — WebFetch is read-only but
+ * must still gate per-domain rather than auto-allowing arbitrary hosts.
+ *
+ *   1. Preapproved documentation host → allow (no prompt)
+ *   2. Domain deny rule               → deny
+ *   3. Domain allow rule (session/settings) → allow
+ *   4. Otherwise                      → ask (first visit to this domain)
+ *
+ * Rules use `WebFetch(domain:<host>)` content.
+ */
+function resolveWebFetchDecision(
+  params: PermissionCheckParams,
+  request: PermissionRequest,
+  settings: PermissionSettings,
+  sessionRules: PermissionRuleSet,
+): PermissionResponse {
+  const url = typeof params.input.url === "string" ? params.input.url : "";
+
+  if (url && isPreapprovedUrl(url)) {
+    return { behavior: "allow", reason: "preapproved documentation host", request };
+  }
+  if (
+    matchesAnyRule(sessionRules.deny, "WebFetch", params.input) ||
+    matchesAnyRule(settings.deny, "WebFetch", params.input)
+  ) {
+    return { behavior: "deny", reason: "matched WebFetch deny rule", request };
+  }
+  if (
+    matchesAnyRule(sessionRules.allow, "WebFetch", params.input) ||
+    matchesAnyRule(settings.allow, "WebFetch", params.input)
+  ) {
+    return { behavior: "allow", reason: "matched WebFetch allow rule", request };
+  }
+  return { behavior: "ask", reason: "first fetch from this domain requires confirmation", request };
+}
+
+export async function checkPermission(params: PermissionCheckParams): Promise<PermissionResponse> {
+  const settings = params.settings ?? (await loadPermissionSettings(params.cwd));
+  const mode = params.mode ?? settings.mode;
+  const sessionRules = params.sessionRules ?? { allow: [], deny: [] };
+  const bashAnalysis = params.tool.name === "Bash" ? analyzeBashCommand(extractBashCommand(params.input)) : undefined;
+  const request: PermissionRequest = {
+    toolName: params.tool.name,
+    input: params.input,
+    summary: summarizePermissionRequest(params.tool.name, params.input),
+    risk: getRiskLabel(params.tool, params.input, bashAnalysis),
+    ruleHint: buildPermissionRuleHint(params.tool.name, params.input),
+  };
+
+  // WebFetch domain permission runs in all modes, before any read-only
+  // fast-path. (Read-only status alone must NOT auto-allow arbitrary domains.)
+  if (params.tool.name === "WebFetch") {
+    return resolveWebFetchDecision(params, request, settings, sessionRules);
+  }
+
+  // Explicit Bash deny rules must win before every read-only fast path,
+  // including Plan Mode and Auto Mode.
+  if (
+    params.tool.name === "Bash" &&
+    (matchesAnyRule(sessionRules.deny, "Bash", params.input) || matchesAnyRule(settings.deny, "Bash", params.input))
+  ) {
+    return { behavior: "deny", reason: "matched deny rule", request };
+  }
+
+  // Auto Mode: replace the legacy "allow everything" short-circuit with a
+  // real decision pipeline (deny rules → Bash fast-path → AI classifier →
+  // degrade to ask). Isolated in its own resolver so the default / plan
+  // paths below are byte-for-byte unchanged.
+  //
+  // If the classifier's circuit breaker has tripped (repeated failures), we
+  // skip the classifier entirely and fall through to the default-mode
+  // handling below — i.e. behave as manual confirmation — notifying once.
+  if (mode === "auto" && !isAutoModeCircuitBroken()) {
+    return await resolveAutoModeDecision(params, request, settings, sessionRules, bashAnalysis);
+  }
+  if (mode === "auto") {
+    notifyCircuitBreakOnce();
+    // fall through to default-mode handling below
+  }
+
+  // Always-allow set — tools whose side effects are confined to Easy Agent's
+  // own ~/.easy-agent state directory and never touch the user's workspace.
+  // Auto-approved in every mode (including Plan Mode) so the model can plan /
+  // coordinate without UI prompts. See COORDINATION_TOOLS for details.
+  //
+  // Note: TeamDelete additionally cleans up agent-owned git worktrees, but
+  // `removeAgentWorktree` refuses to delete dirty ones — so the user's
+  // uncommitted work is never destroyed without their consent.
+  if (isCoordinationTool(params.tool.name)) {
+    return { behavior: "allow", reason: `${params.tool.name} writes coordination-only state`, request };
+  }
+
+  // Plan mode: allow read-only tools, plan mode tools, plan file writes; deny everything else
+  if (mode === "plan") {
+    if (PLAN_ALLOWED_TOOLS.has(params.tool.name)) {
+      return { behavior: "allow", reason: "read-only tool allowed in plan mode", request };
+    }
+    if (params.tool.name === "EnterPlanMode" || params.tool.name === "ExitPlanMode") {
+      return { behavior: "ask", reason: "plan mode transition requires confirmation", request };
+    }
+    if (params.tool.name === "Bash") {
+      if (bashAnalysis?.isReadOnly) {
+        return { behavior: "allow", reason: "read-only shell command allowed in plan mode", request };
+      }
+      return { behavior: "deny", reason: "plan mode blocks non-read-only Bash commands", request };
+    }
+    // Allow writing to the plan file
+    if (params.tool.name === "Write") {
+      const filePath = typeof params.input.file_path === "string" ? params.input.file_path : "";
+      const planPath = getPlanFilePath();
+      if (filePath && path.resolve(filePath) === path.resolve(planPath)) {
+        return { behavior: "allow", reason: "writing to plan file is allowed in plan mode", request };
+      }
+    }
+    return { behavior: "deny", reason: `plan mode blocks ${params.tool.name}`, request };
+  }
+
+  // EnterPlanMode always requires user approval
+  if (params.tool.name === "EnterPlanMode") {
+    return { behavior: "ask", reason: "entering plan mode requires confirmation", request };
+  }
+
+  if (params.tool.name === "Bash") {
+    if (bashAnalysis?.isReadOnly) {
+      return { behavior: "allow", reason: "read-only shell command", request };
+    }
+  } else if (params.tool.isReadOnly()) {
+    return { behavior: "allow", reason: "read-only tool", request };
+  }
+
+  if (
+    matchesAnyRule(sessionRules.deny, params.tool.name, params.input) ||
+    matchesAnyRule(settings.deny, params.tool.name, params.input)
+  ) {
+    return { behavior: "deny", reason: "matched deny rule", request };
+  }
+
+  if (
+    matchesAnyRule(sessionRules.allow, params.tool.name, params.input) ||
+    matchesAnyRule(settings.allow, params.tool.name, params.input)
+  ) {
+    return { behavior: "allow", reason: "matched allow rule", request };
+  }
+
+  // Sandbox auto-allow gate. If the user has the sandbox on AND policy
+  // says "auto-allow when sandboxed", the confirmation dialog is skipped
+  // for Bash — but only after running per-subcommand deny checks. The
+  // sandbox is the ultimate safety net; explicit deny rules still apply.
+  if (params.tool.name === "Bash") {
+    const command = extractBashCommand(params.input);
+    let sandboxSettings;
+    try {
+      sandboxSettings = await loadSandboxSettings(params.cwd);
+    } catch {
+      sandboxSettings = null;
+    }
+    if (
+      sandboxSettings?.enabled &&
+      sandboxSettings.autoAllowBashIfSandboxed &&
+      shouldUseSandbox(
+        {
+          command,
+          dangerouslyDisableSandbox: params.input.dangerouslyDisableSandbox === true,
+        },
+        sandboxSettings,
+      )
+    ) {
+      const decision = checkSandboxAutoAllow(command, { allow: settings.allow, deny: settings.deny }, sessionRules);
+      return { behavior: decision.behavior, reason: decision.reason, request };
+    }
+  }
+
+  if (params.tool.name === "Bash" && isDangerousBashCommand(extractBashCommand(params.input))) {
+    return { behavior: "ask", reason: "dangerous shell command requires confirmation", request };
+  }
+
+  return { behavior: "ask", reason: "operation requires confirmation", request };
+}

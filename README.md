@@ -28,16 +28,109 @@ solver. Its default Anny path now preserves an immutable 3D shell rest metric,
 uses pure body-SDF contact, and has no runtime seam springs. Genesis FEM plus IPC
 remains the target high-fidelity validator on a supported Linux/`pyuipc` host.
 
-## Run
+## Fashion Design Agent
+
+`agent/` is a fork of [Easy Agent](https://github.com/ConardLi/easy-agent)
+(MIT, copied from upstream commit `876c5ca`) turned into a garment-design
+agent. The Python code in this repository is its physics backend, reached
+through the `fashion` MCP server.
+
+| Piece | Path | Role |
+|---|---|---|
+| Agent CLI | `agent/`, `bin/fashion-agent` | Fashion identity prompt, built-in `fashion-designer` and `fit-critic` agents, 30-minute MCP tool timeout (`EASY_AGENT_MCP_TOOL_TIMEOUT`) |
+| Physics MCP server `fashion` | `fashion_agent/`, `.mcp.json` | `parse_design_brief`, `generate_construction_hypotheses`, `run_tryon`, `compare_iterations`, `list_garment_templates`, `list_materials`, `list_outfit_scenes`, `simulate_outfit`, `render_outfit` |
+| Skill `/design-garment` | `.easy-agent/skills/design-garment/SKILL.md` | Brief → hypotheses → try-on → critique → revise → render → `DESIGN_REPORT.md` |
+| WebGPU viewer | `anny-cloth-webgpu.html`, `web/` | Three.js `WebGPURenderer` playback of simulated outfits |
+| Headless capture | `scripts/capture_webgpu.mjs` | Renders frames in Chromium and fails unless the backend is WebGPU (hardware GPU, else SwiftShader) |
+| Body from a photo | `aigc_fashion/body_reconstruction.py`, `scripts/sam3d_body_infer.py` | SAM 3D Body → MHR identity + bone scales → A-pose body mesh and measurements (`reconstruct_body` tool) |
+| Physics notes | `docs/PHYSICS_PRINCIPLES_zh.md` | How the cloth simulation works (Chinese) |
 
 ```bash
-cd /Users/muwusah/Documents/Codex/2026-07-06/5
-/opt/homebrew/anaconda3/bin/python3 -m pip install -r outputs/aigc_fashion_prototype/requirements.txt
-/opt/homebrew/anaconda3/bin/python3 outputs/aigc_fashion_prototype/examples/run_mvp.py \
+python3 -m pip install -r requirements.txt   # physics backend (+ `pip install anny roma` for the Anny body)
+npm install                                  # playwright-core for WebGPU capture
+export ANTHROPIC_AUTH_TOKEN=...              # or a provider profile in ~/.easy-agent/settings.json
+bin/fashion-agent                            # builds agent/ on first run; trust the folder
+> /design-garment relaxed white cotton tee for a 128 cm child, then render the outfit
+```
+
+`.mcp.json` starts the server with `python3`; point `command` at the
+interpreter that has the requirements if `python3` on `PATH` does not.
+
+### Body reconstruction from one image (SAM 3D Body + MHR)
+
+[SAM 3D Body](https://github.com/facebookresearch/sam-3d-body) predicts the
+[Momentum Human Rig](https://github.com/facebookresearch/MHR) parameters of each
+person in a photo. `reconstruct_body` keeps the person's 45 identity
+coefficients and 68 bone scales, drops the photographed pose, evaluates MHR in
+its rest pose (already an A-pose, arms about 48° down) and returns an OBJ in
+metres (+Y up, +Z front), height / chest / waist / hip / shoulder estimates from
+mesh cross-sections, and a preview image. `run_tryon` accepts the mesh directly.
+
+- MHR (code and model assets): Apache-2.0. `ensure_mhr_model()` downloads the
+  release assets into `work/mhr/` (or set `MHR_MODEL_PATH`).
+- SAM 3D Body (code and weights): SAM License; the checkpoints are gated on
+  Hugging Face (request access to `facebook/sam-3d-body-dinov3`). Install it in
+  its own environment per its INSTALL.md, then set `SAM3D_PYTHON`, `SAM3D_REPO`
+  and `SAM3D_CHECKPOINT`. Without it, the tool also accepts a saved prediction
+  JSON written by `scripts/sam3d_body_infer.py`.
+- Single-view estimates: metric scale comes from the model's priors and clothes
+  hide the body, so confirm key measurements with the wearer.
+- Dressed and rendered: `web/scenes/mhr-mean-crop-tee-pleated-skirt` puts a
+  cropped tee (chest 112 / length 48 cm) and the pleated skirt on the MHR mean
+  body through the same physics runners (`--body-mesh <mhr obj>
+  --body-source-up-axis y --body-source-front-axis z --avatar-*-cm ...`).
+  ![MHR mean body, WebGPU](docs/images/webgpu_mhr_mean_outfit_front.png)
+- Verified here with MHR's mean body (`docs/images/mhr_mean_body_apose.png`):
+  172.7 cm, chest 100.5, waist 95.2, hip 109.5, shoulder 40.4 cm. SAM 3D Body
+  itself was not run in this environment (its Hugging Face checkpoints are gated
+  and Hugging Face is not reachable from it).
+
+### Demo outfit rendered with Three.js on WebGPU
+
+![Cropped tee and pleated skirt, WebGPU](docs/images/webgpu_demo_outfit_front.png)
+
+`web/scenes/agent-demo-crop-tee-pleated-skirt` was produced end to end in this
+repository from two synthetic product images (`scripts/make_demo_inputs.py`):
+image-fitted T-shirt pattern → implicit-shell T-shirt dynamics → pleated-skirt
+dynamics on the Anny child body (`scripts/export_anny_body_obj.py`), exported
+with `scripts/export_garment_runs_scene.py` and rendered by
+`scripts/capture_webgpu.mjs` (WebGPU backend; here Chromium's SwiftShader
+adapter). The cropped tee ends 3.2 cm above the waistband, so the two garments
+were simulated separately and need no inter-garment contact. Overlapping layers
+go through `examples/run_unified_anny_cloth4d.py`; on a 4-core CPU that joint
+solve did not finish in usable time for this outfit (and with walking enabled it
+stopped at its contact-convergence check), so it is not used here. Both garment
+rollouts are short settling runs (0.072 s and 0.24 s) with uncalibrated
+(`material_floor`) constitutive scaling.
+
+Open it interactively with `python3 -m http.server 8769` and
+`http://127.0.0.1:8769/anny-cloth-webgpu.html?scene=agent-demo-crop-tee-pleated-skirt`.
+
+Headless WebGPU capture of any scene:
+
+```bash
+CHROMIUM_PATH=/path/to/chrome node scripts/capture_webgpu.mjs \
+  --scene anny-skirt-walk-one-step-2s-contactfix-v10-webgpu --yaws 0,35 --out outputs/renders
+```
+
+## Run
+
+All commands run from the repository root. Paths under `assets/body_meshes/`,
+`assets/mocap/`, `outputs/` and `work/` are local-only (gitignored) and must be
+created or downloaded first; the image-driven examples now take
+`--texture-image` / `--shirt-texture` / `--skirt-image` as required arguments.
+
+```bash
+python3 -m pip install -r requirements.txt
+python3 examples/run_mvp.py \
   --prompt "oversized minimal streetwear short sleeve cotton t-shirt" \
   --steps 64 \
   --resolution 23
 ```
+
+The original build machine's absolute paths still appear in some commands
+below; read `/opt/homebrew/anaconda3/bin/python3` as `python3` and
+`outputs/aigc_fashion_prototype/` as the repository root.
 
 Commercial-safe Anny body mesh path:
 
@@ -462,12 +555,12 @@ solver, not looser material gates.
 ## Test
 
 ```bash
-cd /Users/muwusah/Documents/Codex/2026-07-06/5/outputs/aigc_fashion_prototype
-/opt/homebrew/anaconda3/bin/python3 -m pytest -q
+python3 -m pip install -r requirements.txt
+python3 -m pytest -q
 ```
 
-The default macOS `/usr/bin/python3` is not sufficient unless the dependencies
-above have been installed into it.
+Tests that read local-only assets (body meshes, mocap, prior outputs, the
+CortexODE checkout) are reported as skipped on a clean clone.
 
 ## License Boundary
 

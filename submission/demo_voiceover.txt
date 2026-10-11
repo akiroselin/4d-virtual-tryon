@@ -1,0 +1,9 @@
+This is 4D Virtual Try-On, a physics-aware bridge from garment images and construction priors to simulation-ready clothing.
+
+The demo shows a T-shirt and pleated skirt moving with a commercial-safe Anny avatar during one captured walking step. The garments share a four-dimensional cloth and body scene graph. Hyper-NODE material fields provide Kirchhoff-Love membrane and bending response, while a symplectic phase-space solver handles gravity, body momentum, signed-distance contact events, and gauge-frame friction.
+
+The final fixed-resolution run disables adaptive mesh refinement and uses intrinsic Laplace-Beltrami operators, so the material model is not tied to one triangulation.
+
+Codex with GPT-5.6 was our main engineering partner. It translated the research proposal into runnable modules, integrated upstream work, wrote tests, diagnosed repeated WebGPU simulations, and helped refine contact, material, gait, and rendering behavior.
+
+The result is an inspectable research prototype for physically meaningful virtual fashion, not just a generated image.

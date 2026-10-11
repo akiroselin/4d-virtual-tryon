@@ -1,0 +1,210 @@
+:root {
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  color: #181a1d;
+  background: #e9ecec;
+}
+
+* { box-sizing: border-box; }
+
+[hidden] { display: none !important; }
+
+html, body, #app {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+}
+
+body { background: #e9ecec; }
+
+#viewport {
+  display: block;
+  width: 100%;
+  height: 100%;
+  touch-action: none;
+}
+
+.topbar {
+  position: absolute;
+  inset: 22px 24px auto 24px;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  pointer-events: none;
+}
+
+.eyebrow {
+  margin: 0 0 4px;
+  color: #686d70;
+  font-size: 10px;
+  font-weight: 750;
+}
+
+h1 {
+  margin: 0;
+  font-size: 23px;
+  font-weight: 580;
+}
+
+.backend {
+  padding: 7px 10px;
+  border: 1px solid #c6cbca;
+  border-radius: 6px;
+  background: rgba(247, 249, 248, 0.9);
+  color: #4c5253;
+  font: 650 11px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.backend.webgpu {
+  border-color: #8db8a2;
+  color: #176343;
+}
+
+.metrics {
+  position: absolute;
+  top: 88px;
+  left: 24px;
+  display: grid;
+  width: 174px;
+  border-top: 1px solid #c6cbca;
+}
+
+.metrics div {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 0;
+  border-bottom: 1px solid #c6cbca;
+  font-size: 11px;
+}
+
+.metrics span { color: #747a7a; }
+.metrics strong { font-weight: 650; }
+
+.loading {
+  position: absolute;
+  inset: 50% auto auto 50%;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid #ccd0cf;
+  border-radius: 6px;
+  background: rgba(250, 251, 250, 0.94);
+  transform: translate(-50%, -50%);
+  color: #53595a;
+  font-size: 12px;
+}
+
+.loading span {
+  width: 12px;
+  height: 12px;
+  border: 2px solid #bcc1c0;
+  border-top-color: #202526;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.transport {
+  position: absolute;
+  right: 24px;
+  bottom: 22px;
+  left: 24px;
+  display: grid;
+  grid-template-columns: 34px minmax(160px, 1fr) 72px 76px;
+  align-items: end;
+  gap: 13px;
+  padding: 11px 12px;
+  border: 1px solid #c8cccb;
+  border-radius: 7px;
+  background: rgba(247, 249, 248, 0.92);
+}
+
+button, select, input { font: inherit; }
+
+#play {
+  width: 34px;
+  height: 34px;
+  border: 1px solid #bfc4c3;
+  border-radius: 5px;
+  background: #fdfefd;
+  color: #1e2223;
+  cursor: pointer;
+}
+
+.timeline, .speed {
+  display: grid;
+  gap: 6px;
+  color: #717777;
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+#scrubber { width: 100%; accent-color: #313839; }
+
+#timecode {
+  align-self: center;
+  color: #303536;
+  font: 600 11px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+  text-align: right;
+}
+
+#speed {
+  height: 28px;
+  border: 1px solid #c3c8c7;
+  border-radius: 4px;
+  background: white;
+  color: #252a2b;
+}
+
+.legend {
+  position: absolute;
+  right: 24px;
+  bottom: 88px;
+  display: flex;
+  gap: 14px;
+  color: #626869;
+  font-size: 10px;
+}
+
+.legend span { display: flex; align-items: center; gap: 5px; }
+.legend i { width: 8px; height: 8px; border-radius: 50%; }
+.legend .skin { background: #c99474; }
+.legend .shirt { background: #f7f7f4; border: 1px solid #aeb2b1; }
+.legend .skirt { background: #443d36; }
+
+.error {
+  position: absolute;
+  inset: 50% auto auto 50%;
+  width: min(440px, calc(100% - 32px));
+  padding: 16px;
+  border: 1px solid #b98883;
+  border-radius: 6px;
+  background: #fff8f6;
+  transform: translate(-50%, -50%);
+  color: #742f27;
+  font-size: 13px;
+}
+
+@media (max-width: 680px) {
+  .topbar { inset: 14px 14px auto; }
+  h1 { font-size: 18px; }
+  .metrics { top: 70px; left: 14px; width: 154px; }
+  .legend { right: 14px; bottom: 108px; flex-direction: column; gap: 5px; }
+  .transport {
+    right: 10px;
+    bottom: 10px;
+    left: 10px;
+    grid-template-columns: 34px minmax(100px, 1fr) 58px;
+    gap: 8px;
+  }
+  .speed { display: none; }
+  #timecode { font-size: 10px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .loading span { animation: none; }
+}
