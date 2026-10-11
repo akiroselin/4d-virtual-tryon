@@ -10,6 +10,7 @@ import torch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+from aigc_fashion.data import AvatarSpec  # noqa: E402
 from aigc_fashion.anny_cloth4d_simulation import (  # noqa: E402
     AnnyCloth4DConfig,
     run_anny_cloth4d_simulation,
@@ -22,6 +23,10 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--out-dir", type=Path, default=ROOT / "outputs" / "anny_e3_anchor_cloth4d")
     parser.add_argument("--body-mesh", type=Path, default=ROOT / "assets" / "body_meshes" / "anny_child_neutral.obj")
+    parser.add_argument("--avatar-height-cm", type=float, default=128.0, help="Body measurements of --body-mesh.")
+    parser.add_argument("--avatar-chest-cm", type=float, default=64.0)
+    parser.add_argument("--avatar-waist-cm", type=float, default=56.0)
+    parser.add_argument("--avatar-shoulder-cm", type=float, default=30.0)
     parser.add_argument(
         "--body-source-up-axis",
         default="z",
@@ -113,6 +118,13 @@ def main() -> None:
         placement_mode=args.placement_mode,
         body_source_up_axis=args.body_source_up_axis,
         body_source_front_axis=args.body_source_front_axis,
+        avatar_spec=AvatarSpec(
+            chest_cm=args.avatar_chest_cm,
+            waist_cm=args.avatar_waist_cm,
+            shoulder_cm=args.avatar_shoulder_cm,
+            height_cm=args.avatar_height_cm,
+            pose="a-pose",
+        ),
         teacher_rollout=args.teacher_rollout,
         warm_start_checkpoint=args.warm_start_checkpoint,
         config=config,

@@ -228,10 +228,17 @@ def build_body_sdf_tshirt_shell(
         shell_faces = shell_faces[:, [0, 2, 1]]
     shell_surface = trimesh.Trimesh(shell_vertices, shell_faces, process=False)
     if len(shell_faces) > target_faces:
-        try:
-            candidate = shell_surface.simplify_quadric_decimation(
-                face_count=target_faces
-            )
+        # Quadric decimation can create a single non-manifold edge at one face
+        # budget and not at a nearby one (seen on MHR bodies), so try a few
+        # budgets before keeping the dense extraction.
+        for factor in (1.0, 1.1, 1.25, 1.5, 2.0):
+            budget = int(round(factor * target_faces))
+            if budget >= len(shell_faces):
+                break
+            try:
+                candidate = shell_surface.simplify_quadric_decimation(face_count=budget)
+            except Exception:
+                break
             candidate_vertices = np.asarray(candidate.vertices, dtype=np.float64)
             candidate_faces = np.asarray(candidate.faces, dtype=np.int32)
             candidate_topology = analyze_triangle_mesh(
@@ -246,8 +253,7 @@ def build_body_sdf_tshirt_shell(
             ):
                 shell_vertices = candidate_vertices
                 shell_faces = candidate_faces
-        except Exception:
-            pass
+                break
 
     shell_vertices = _regularize_tshirt_boundaries(
         avatar,

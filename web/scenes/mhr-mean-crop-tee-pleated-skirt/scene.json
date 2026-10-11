@@ -1,0 +1,99 @@
+{
+  "format": "NeuralClothSim4D Three.js binary scene v1",
+  "renderer": "Three.js WebGPURenderer",
+  "threeVersion": "0.184.0",
+  "units": "meters",
+  "upAxis": "+Y",
+  "frontAxis": "+Z",
+  "frameCount": 13,
+  "timesSeconds": [
+    0.0,
+    0.006000000000000001,
+    0.012000000000000002,
+    0.018000000000000002,
+    0.024000000000000004,
+    0.030000000000000006,
+    0.036000000000000004,
+    0.04200000000000001,
+    0.04800000000000001,
+    0.054000000000000006,
+    0.06000000000000001,
+    0.06600000000000002,
+    0.07200000000000001
+  ],
+  "physicalDurationSeconds": 0.07200000000000001,
+  "displayLoopSeconds": 2.0,
+  "bounds": {
+    "minimum": [
+      -0.6772328615188599,
+      -1.3576502799987793,
+      0.6012461185455322
+    ],
+    "maximum": [
+      0.6772328615188599,
+      0.36934971809387207,
+      1.0135853290557861
+    ]
+  },
+  "files": {
+    "bodyPositions": "body-positions.f32",
+    "bodyIndices": "body-indices.u32",
+    "shirtPositions": "shirt-positions.f32",
+    "shirtVelocities": "shirt-velocities.f32",
+    "shirtIndices": "shirt-indices.u32",
+    "shirtUvs": "shirt-uvs.f32",
+    "skirtPositions": "skirt-positions.f32",
+    "skirtVelocities": "skirt-velocities.f32",
+    "skirtIndices": "skirt-indices.u32",
+    "skirtUvs": "skirt-uvs.f32",
+    "shirtTexture": "shirt-print.png",
+    "skirtTexture": "skirt-plaid.png"
+  },
+  "meshes": {
+    "body": {
+      "vertexCount": 18439,
+      "indexCount": 110622
+    },
+    "shirt": {
+      "vertexCount": 419,
+      "indexCount": 2307,
+      "groups": [
+        {
+          "start": 0,
+          "count": 363,
+          "materialIndex": 0
+        },
+        {
+          "start": 363,
+          "count": 1944,
+          "materialIndex": 1
+        }
+      ]
+    },
+    "skirt": {
+      "vertexCount": 900,
+      "indexCount": 5040
+    }
+  },
+  "physicsAudit": {
+    "minimumBodyGapMeters": 0.0029628872871398926,
+    "minimumInterGarmentGapMeters": 0.016371965408325195,
+    "interGarmentContact": "none needed: garments simulated separately on the same static body with a 1.6 cm vertical gap between T-shirt hem and skirt waistband",
+    "constitutiveCalibration": {
+      "tshirt": "material_floor",
+      "pleated_skirt": "material_floor"
+    },
+    "metricProjectionEnabled": false,
+    "skirtViolatingEdges": 0,
+    "skirtEdgeCount": 0,
+    "lieMessageSubsteps": 36,
+    "sources": {
+      "tshirt": "outputs/mhr_tshirt",
+      "pleated_skirt": "outputs/mhr_skirt"
+    },
+    "inputs": {
+      "shirt_texture": "outputs/demo_inputs/synthetic_tshirt.png",
+      "skirt_image": "outputs/demo_inputs/synthetic_pleated_skirt.png"
+    }
+  }
+}

@@ -45,6 +45,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--body-mesh", type=Path, default=ROOT / "assets" / "body_meshes" / "anny_child_neutral.obj")
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--minimum-layer-gap-m", type=float, default=0.01)
+    parser.add_argument("--avatar-height-cm", type=float, default=128.0, help="Body measurements of --body-mesh.")
+    parser.add_argument("--avatar-chest-cm", type=float, default=64.0)
+    parser.add_argument("--avatar-waist-cm", type=float, default=56.0)
+    parser.add_argument("--avatar-shoulder-cm", type=float, default=30.0)
+    parser.add_argument("--body-source-up-axis", default="z", help="Anny exports are Blender Z-up.")
+    parser.add_argument("--body-source-front-axis", default="-y")
     return parser.parse_args()
 
 
@@ -112,10 +118,16 @@ def main() -> None:
     output.mkdir(parents=True, exist_ok=True)
     avatar = BodyMeshAvatar.from_obj(
         args.body_mesh,
-        AvatarSpec(chest_cm=64, waist_cm=56, shoulder_cm=30, height_cm=128, pose="a-pose"),
+        AvatarSpec(
+            chest_cm=args.avatar_chest_cm,
+            waist_cm=args.avatar_waist_cm,
+            shoulder_cm=args.avatar_shoulder_cm,
+            height_cm=args.avatar_height_cm,
+            pose="a-pose",
+        ),
         source_x_axis="x",
-        source_up_axis="z",
-        source_front_axis="-y",
+        source_up_axis=args.body_source_up_axis,
+        source_front_axis=args.body_source_front_axis,
     )
     shirt_positions, shirt_velocities, shirt_duration, shirt_report = _rollout(args.shirt_run)
     skirt_positions, skirt_velocities, skirt_duration, skirt_report = _rollout(args.skirt_run)

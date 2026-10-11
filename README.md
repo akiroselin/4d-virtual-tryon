@@ -75,6 +75,11 @@ mesh cross-sections, and a preview image. `run_tryon` accepts the mesh directly.
   JSON written by `scripts/sam3d_body_infer.py`.
 - Single-view estimates: metric scale comes from the model's priors and clothes
   hide the body, so confirm key measurements with the wearer.
+- Dressed and rendered: `web/scenes/mhr-mean-crop-tee-pleated-skirt` puts a
+  cropped tee (chest 112 / length 48 cm) and the pleated skirt on the MHR mean
+  body through the same physics runners (`--body-mesh <mhr obj>
+  --body-source-up-axis y --body-source-front-axis z --avatar-*-cm ...`).
+  ![MHR mean body, WebGPU](docs/images/webgpu_mhr_mean_outfit_front.png)
 - Verified here with MHR's mean body (`docs/images/mhr_mean_body_apose.png`):
   172.7 cm, chest 100.5, waist 95.2, hip 109.5, shoulder 40.4 cm. SAM 3D Body
   itself was not run in this environment (its Hugging Face checkpoints are gated
